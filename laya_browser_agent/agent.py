@@ -213,20 +213,27 @@ class LayaAgent:
 
                 # 2.5 Autonomous Multi-Page Pagination Loop Handler
                 if is_pagination_loop:
+                    # If pagination controls are below the fold, scroll down to reveal them
+                    scroll_st = self.driver.get_scroll_state()
+                    if scroll_st.get("can_scroll_down"):
+                        self.driver.mousewheel(0, 500)
+                        self.driver.wait_for_settled(200)
+                        screen_elements = self.driver.get_screen_elements()
+
                     next_btn = next((
                         el for el in screen_elements
                         if el.get("tag") in ("button", "a") and el.get("text", "").strip().lower() == "next"
                     ), None)
                     has_next = bool(next_btn and not next_btn.get("disabled"))
-                    wants_sc = any(w in st_low for w in ("screenshot", "snapshot", "capture"))
+                    wants_sc = any(w in st_low for w in ("screenshot", "snapshot", "capture")) or any(w in (self.goal or "").lower() for w in ("screenshot", "snapshot", "capture"))
                     last_was_sc = bool(self.history and any("browser_take_screenshot" in h for h in self.history[-1:]))
 
                     if wants_sc and not last_was_sc:
-                        # Capture screenshot of the current page in the pagination flow
+                        # Capture full-page screenshot of the current page in the pagination flow
                         report_out_dir = os.path.dirname(self.report_file) or self.report_dir
                         os.makedirs(report_out_dir, exist_ok=True)
                         sc_path = os.path.join(report_out_dir, f"screenshot_step_{step_num}.png")
-                        saved_path = self.driver.take_screenshot(sc_path)
+                        saved_path = self.driver.take_screenshot(sc_path, full_page=True)
                         prim_dur = (time.time() - step_start) * 1000
                         event = AgentStepEvent(
                             step=step_num,
@@ -247,6 +254,12 @@ class LayaAgent:
                             self.event_callback(event)
                         self.history.append(f"browser_take_screenshot({json.dumps({'path': saved_path})})")
                         if not has_next:
+                            while self.current_subtask_idx + 1 < len(self.subtasks):
+                                nxt = self.subtasks[self.current_subtask_idx + 1].lower()
+                                if any(w in nxt for w in ("pagination", "all pages", "each page", "every page", "take screenshot", "take a screenshot")):
+                                    self.current_subtask_idx += 1
+                                else:
+                                    break
                             self.current_subtask_idx += 1
                         continue
 
@@ -282,6 +295,12 @@ class LayaAgent:
 
                     else:
                         # Pagination complete
+                        while self.current_subtask_idx + 1 < len(self.subtasks):
+                            nxt = self.subtasks[self.current_subtask_idx + 1].lower()
+                            if any(w in nxt for w in ("pagination", "all pages", "each page", "every page", "take screenshot", "take a screenshot")):
+                                self.current_subtask_idx += 1
+                            else:
+                                break
                         self.current_subtask_idx += 1
                         continue
 
@@ -841,8 +860,10 @@ class LayaAgent:
 
             value = None
 
-            # 0. Check explicit fallback_params from decomposition or locator
-            if fallback_params and prop_name in fallback_params and fallback_params[prop_name] not in (None, ""):
+            # 0. High-confidence credentials from extracted_slots take precedence
+            if prop_name in ("username", "password") and self.extracted_slots.get(prop_name):
+                value = self.extracted_slots[prop_name]
+            elif fallback_params and prop_name in fallback_params and fallback_params[prop_name] not in (None, ""):
                 value = fallback_params[prop_name]
 
             # A. Exact or normalized slot match

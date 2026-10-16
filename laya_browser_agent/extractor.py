@@ -45,7 +45,7 @@ class SlotExtractor:
             "Analyze this human user request and return a clean, organized, structured execution plan in JSON:\n"
             "1. 'intent': concise 1-sentence normalized objective summary.\n"
             "2. 'slots': dictionary of extracted parameters (separate 'username', 'password', 'quantity' as int, 'search' or 'query' ONLY for text search keywords, 'status' or 'option' for dropdown / status selections, 'dropdown' for target dropdown names). Do NOT put dropdown or status filter values into search/query.\n"
-            "3. 'subtasks': ordered list of concise sequential action steps to achieve the goal. Do NOT include opening or navigating to the initial URL (the browser is already open at that page). If login credentials are provided in the task, include 'Log in with credentials' as the very first step before performing actions. Keep subtasks strictly faithful to discrete goals without fabricating artificial sub-steps: do NOT split selecting/picking a product and buying/ordering it into two steps (combine into 'Place order for product'); separate taking a screenshot or logging out into their own individual steps.\n"
+            "3. 'subtasks': ordered list of concise sequential action steps to achieve the goal. Do NOT include opening or navigating to the initial root URL (the browser starts at that address). DO preserve explicit page navigations requested in the task (e.g., 'go to products page', 'go to orders page'). If login credentials are provided in the task, include 'Log in with credentials' as the very first step before performing actions. Keep subtasks strictly faithful to discrete goals without fabricating artificial sub-steps: do NOT split selecting/picking a product and buying/ordering it into two steps (combine into 'Place order for product'); separate taking a screenshot or logging out into their own individual steps.\n"
             f"{url_context}\n"
             f"User request: {task}\n\n"
             "Respond in valid JSON only:\n"
@@ -161,11 +161,15 @@ class SlotExtractor:
                                 merged.append(clean_subtasks[i + 1])
                                 skip = True
                                 continue
-                            if any(w in st_cur for w in ("check if there are multiple pages", "check pagination", "check if multiple pages")):
-                                if any(w in st_nxt for w in ("go to", "each page", "all pages")):
+                            if any(w in st_cur for w in ("check if there are multiple pages", "check pagination", "check if multiple pages", "if there are many pages", "if there are multiple pages")):
+                                if any(w in st_nxt for w in ("go to", "each page", "all pages", "pagination")):
                                     merged.append(clean_subtasks[i + 1])
                                     skip = True
                                     continue
+                            if any(w in st_cur for w in ("all pages", "pagination", "multiple pages")) and any(w in st_nxt for w in ("each page", "every page", "screenshot", "snapshot")):
+                                merged.append(f"{clean_subtasks[i]} and take screenshot of each page")
+                                skip = True
+                                continue
                         merged.append(clean_subtasks[i])
                     clean_subtasks = merged or clean_subtasks
 

@@ -195,9 +195,10 @@ class PlaywrightWebMcpDriver:
                 if (rect.width <= 0 || rect.height <= 0) continue;
 
                 const isTableRow = el.closest('tr, [data-row], .card, li');
+                const isPagination = el.closest('nav[aria-label*="pagination" i], .pagination, [data-pagination]') || (el.innerText || '').toLowerCase().includes('next') || (el.innerText || '').toLowerCase().includes('previous');
                 const isInViewport = (rect.bottom >= 0 && rect.top <= window.innerHeight && rect.right >= 0 && rect.left <= window.innerWidth);
-                if (!isInViewport && (!isTableRow || rect.top > 8000)) continue;
-                if (el.disabled || el.type === 'hidden') continue;
+                if (!isInViewport && (!isTableRow && !isPagination || rect.top > 8000)) continue;
+                if ((el.disabled && !isPagination) || el.type === 'hidden') continue;
                 
                 let text = (el.innerText || el.value || el.placeholder || el.getAttribute('aria-label') || el.getAttribute('title') || el.name || el.id || '').trim();
 
@@ -535,13 +536,16 @@ class PlaywrightWebMcpDriver:
         except Exception:
             pass
 
-    def take_screenshot(self, filepath: Optional[str] = None) -> str:
+    def take_screenshot(self, filepath: Optional[str] = None, full_page: bool = True) -> str:
         """Captures a screenshot of the current page and returns saved file path."""
         if not filepath:
             os.makedirs("reports", exist_ok=True)
             filepath = os.path.join("reports", f"screenshot_{int(time.time() * 1000)}.png")
         os.makedirs(os.path.dirname(os.path.abspath(filepath)), exist_ok=True)
-        self.page.screenshot(path=filepath)
+        try:
+            self.page.screenshot(path=filepath, full_page=full_page)
+        except Exception:
+            self.page.screenshot(path=filepath)
         return filepath
 
     def get_scroll_state(self) -> Dict[str, Any]:

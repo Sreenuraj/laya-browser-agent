@@ -278,12 +278,13 @@ flowchart TD
      - Awaits the dynamic option popover.
      - Clicks the exact matching option (`Out of Stock`).
 
-### 9.3 Multi-Page Pagination Loop Invariant
+### 9.3 Multi-Page Pagination Loop Invariant & Below-The-Fold Reveal
 
-For batch subtasks covering multi-page datasets (e.g. *"go to all pages and take a screenshot"*, *"cancel all pending orders across all pages"*):
-- The agent executes the active operation on the current page.
-- It checks `fresh_elements` for a non-disabled `Next` button in the `pagination` region.
-- If `Next` exists and is actionable, the subtask remains active, clicks `Next`, waits for DOM settling, and repeats until the final page is reached.
+In modern web applications (such as the PostQode Nexus product catalog), pagination bars reside at the bottom of data tables, frequently located below the initial 720px viewport fold:
+- **Below-the-Fold Perception**: `get_screen_elements()` explicitly preserves pagination controls across the full document height (up to 8,000px) and retains `disabled: Boolean(el.disabled)` status for pagination buttons rather than pruning them.
+- **Auto-Scroll Viewport Reveal**: During pagination loops, if `can_scroll_down` is true, the agent automatically executes viewport scrolling (`mousewheel(0, 500)`) to bring the bottom table rows and pagination controls into view.
+- **Full-Page Screenshots**: `take_screenshot(path, full_page=True)` captures the entire scrollable document, guaranteeing that the filtered items and pagination controls are completely visible in verification reports.
+- **State Machine**: The loop alternates: `Page Screenshot` -> `Click Next` -> `Page Screenshot` -> `Click Next` until the `Next` button has `disabled: True`, at which point the pagination loop completes and cleanly advances to the next subtask.
 
 ### 9.4 Intent Parameter Isolation
 

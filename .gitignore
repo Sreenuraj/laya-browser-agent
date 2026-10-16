@@ -4,4 +4,4 @@ __pycache__/
 .playwright-cli/
 .DS_Store
 *.log
-reports/screenshot_step_*.png
+reports/
