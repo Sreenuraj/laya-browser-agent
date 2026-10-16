@@ -15,6 +15,47 @@ def normalize_route_key(url: str) -> str:
     return clean or "root"
 
 
+def tool_matches_subtask(tool_name: str, subtask: str) -> bool:
+    """Verifies whether a tool's action capability aligns with the subtask's action verb."""
+    st = subtask.lower()
+    t = tool_name.lower().replace("tool_", "")
+
+    # Dropdown / combobox selections: keyword search or ordering tools do NOT match!
+    is_dropdown_task = any(w in st for w in ("dropdown", "combobox", "select option", "choose option", "all status", "select status", "filter by status", "from dropdown"))
+    if is_dropdown_task and any(w in t for w in ("search", "find", "query", "order", "cart")):
+        return False
+
+    # Search tools: require search/find/query verbs and not dropdown tasks
+    if any(w in t for w in ("search", "query", "find")):
+        return any(v in st for v in ("search", "find", "query", "lookup", "catalog")) and not is_dropdown_task
+
+    # Order creation tools
+    if any(w in t for w in ("place_order", "create_order", "buy", "purchase")):
+        return any(v in st for v in ("buy", "order", "purchase", "checkout"))
+
+    # Order action tools
+    if "approve" in t:
+        return "approve" in st
+    if "reject" in t:
+        return "reject" in st
+    if "cancel" in t:
+        return "cancel" in st
+
+    # Navigation tools
+    if "navigate" in t:
+        return any(v in st for v in ("navigate", "go to", "visit", "open", "head to"))
+
+    # Auth tools
+    if "login" in t:
+        return any(v in st for v in ("login", "signin", "authenticate"))
+    if "logout" in t:
+        return any(v in st for v in ("logout", "signout", "log out", "sign out"))
+
+    # Non-generic verbs
+    tool_words = {w for w in re.findall(r"\w+", t) if w not in ("get", "set", "list", "fetch", "product", "products", "order", "orders", "item", "items", "page", "user")}
+    return any(w in st for w in tool_words if len(w) > 3)
+
+
 def extract_page_candidates(
     available_tools: List[Dict[str, Any]],
     screen_elements: List[Dict[str, Any]],
@@ -51,8 +92,8 @@ def extract_page_candidates(
             "tool_def": tool,
         }
 
-    # 2. Form Inputs & Textareas (Only if no WebMCP tools available on this page, or non-WebMCP app)
-    if not available_tools:
+    # 2. Form Inputs & Textareas (Only if page has no WebMCP auth tool or non-auth inputs)
+    if not has_auth_tool:
         for el in screen_elements:
             tag = el.get("tag", "")
             el_type = el.get("type", "")
@@ -62,15 +103,17 @@ def extract_page_candidates(
                 key = f"input_{clean_field[:25]}"
                 if key in candidates or key in excluded:
                     continue
+                region = el.get("region", "toolbar")
                 candidates[key] = {
                     "type": "input",
                     "field": field_name,
                     "input_type": el_type or "text",
-                    "label": f"Enter {field_name} (type={el_type or 'text'})",
+                    "region": region,
+                    "label": f"[{region.capitalize()}] Enter {field_name} (type={el_type or 'text'})",
                     "coords": (el["x"], el["y"]) if el.get("x") is not None else None,
                 }
 
-    # 3. Action Buttons & Navigation Links
+    # 3. Action Buttons, Navigation Links, Dropdowns, and Overlay Elements
     for el in screen_elements:
         tag = el.get("tag", "")
         el_type = el.get("type", "")
@@ -91,11 +134,17 @@ def extract_page_candidates(
             continue
 
         href = el.get("href", "")
+        role = el.get("role", "")
+        region = el.get("region", "content")
+
         # Filter out self-links to prevent navigation loops
         if href and (current_url.rstrip("/").endswith(href.rstrip("/")) or href.rstrip("/") in current_url):
             continue
 
-        is_nav = bool(href or tag == "a" or el.get("role") in ("link", "tab"))
+        is_nav = bool(href or tag == "a" or role in ("link", "tab") or region == "navigation")
+        is_combobox = bool(role == "combobox" or tag == "select")
+        is_option = bool(role in ("option", "menuitem"))
+        is_pagination = bool(region == "pagination" or any(w in text.lower() for w in ("next", "previous", "prev", "page ")))
 
         # Filter out logo/home links when on deeper page to avoid resetting session/looping
         if is_nav and href in ("/", "/dashboard", "#"):
@@ -103,9 +152,24 @@ def extract_page_candidates(
             if current_path and current_path not in ("", "dashboard"):
                 continue
 
-        if is_nav:
-            label = f"Navigate to '{text}' page"
+        if is_combobox:
+            label = f"[{region.capitalize()}] Select '{text}' dropdown filter"
+            cand_type = "dropdown"
+        elif is_option:
+            label = f"[Overlay] Choose option '{text}'"
+            cand_type = "option"
+        elif is_pagination:
+            label = f"[Pagination] Go to '{text}'"
+            cand_type = "pagination"
+        elif is_nav:
+            label = f"[Navigation] Navigate to '{text}' page"
             cand_type = "navigate"
+        elif region == "overlay":
+            label = f"[Modal] Click '{text}'"
+            cand_type = "overlay"
+        elif region == "toolbar":
+            label = f"[Toolbar] Click '{text}'"
+            cand_type = "toolbar"
         else:
             label = f"{text.rstrip('.')}"
             cand_type = "click"
@@ -113,6 +177,7 @@ def extract_page_candidates(
         candidates[key] = {
             "type": cand_type,
             "text": text,
+            "region": region,
             "label": label,
             "coords": (el["x"], el["y"]) if el.get("x") is not None else None,
             "path": href,
@@ -229,22 +294,32 @@ class LayaEngine:
 
         sub_words = set(re.findall(r"\w+", subtask.lower()))
 
-        # Separate candidates into buckets
+        # Separate candidates into semantic buckets
         tool_cands: Dict[str, str] = {}
+        overlay_cands: Dict[str, str] = {}
+        dropdown_cands: Dict[str, str] = {}
+        pagination_cands: Dict[str, str] = {}
         matched_nav_cands: Dict[str, str] = {}
         other_nav_cands: Dict[str, str] = {}
-        matched_btn_cands: Dict[str, str] = {}
-        other_btn_cands: Dict[str, str] = {}
+        matched_action_cands: Dict[str, str] = {}
+        other_action_cands: Dict[str, str] = {}
         prim_cands: Dict[str, str] = {}
 
         for k, cand in candidates.items():
             if k in excluded_set:
                 continue
             ctype = cand.get("type")
+            region = cand.get("region", "")
             lbl = cand.get("label", k)
             full_txt = f"{k} {lbl}".lower()
 
-            if ctype == "tool":
+            if ctype == "overlay" or region == "overlay":
+                overlay_cands[k] = lbl
+            elif ctype == "dropdown":
+                dropdown_cands[k] = lbl
+            elif ctype == "pagination":
+                pagination_cands[k] = lbl
+            elif ctype == "tool":
                 tool_cands[k] = lbl
             elif ctype == "primitive":
                 prim_cands[k] = lbl
@@ -255,17 +330,22 @@ class LayaEngine:
                     other_nav_cands[k] = lbl
             else:
                 if target_token and target_token in full_txt:
-                    matched_btn_cands[k] = lbl
+                    matched_action_cands[k] = lbl
                 elif any(w in full_txt for w in sub_words if len(w) > 3):
-                    matched_btn_cands[k] = lbl
+                    matched_action_cands[k] = lbl
                 else:
-                    other_btn_cands[k] = lbl
+                    other_action_cands[k] = lbl
 
         # Assemble up to 10-12 focused choices for Laya
         criteria: Dict[str, str] = {}
 
-        # 1. Operational tools matching subtask verbs (highest priority in WebMCP applications)
-        matched_tools = {k: v for k, v in tool_cands.items() if any(w in k.lower() or w in v.lower() for w in sub_words if len(w) > 3)}
+        # 1. Active modal / dialog / dropdown overlay (Highest priority: user must interact with active overlay first)
+        for k, v in list(overlay_cands.items())[:5]:
+            if len(criteria) < 8:
+                criteria[k] = v
+
+        # 2. Operational tools matching subtask verbs
+        matched_tools = {k: v for k, v in tool_cands.items() if tool_matches_subtask(k, subtask)}
         other_tools = {k: v for k, v in tool_cands.items() if k not in matched_tools}
 
         sorted_matched_tools = sorted(
@@ -277,17 +357,31 @@ class LayaEngine:
             if k != "tool_navigate_to_page" and len(criteria) < 8:
                 criteria[k] = v
 
-        # 2. Matched navigation links (e.g. Products tab when searching for products)
+        # 3. Dropdowns & comboboxes (if subtask mentions dropdown/status/filter/combobox/select)
+        is_dropdown_subtask = any(w in subtask.lower() for w in ("dropdown", "combobox", "status", "filter", "select", "option"))
+        if is_dropdown_subtask:
+            for k, v in list(dropdown_cands.items())[:3]:
+                if len(criteria) < 8:
+                    criteria[k] = v
+
+        # 4. Pagination controls (if subtask mentions page/pagination/next page)
+        is_pagination_subtask = any(w in subtask.lower() for w in ("page", "pagination", "next page", "each page", "all pages"))
+        if is_pagination_subtask:
+            for k, v in list(pagination_cands.items())[:3]:
+                if len(criteria) < 8:
+                    criteria[k] = v
+
+        # 5. Matched navigation links (e.g. Products tab when searching for products)
         for k, v in list(matched_nav_cands.items())[:3]:
             if len(criteria) < 8:
                 criteria[k] = v
 
-        # 3. Matched buttons (up to 4)
-        for k, v in list(matched_btn_cands.items())[:4]:
+        # 6. Matched action buttons / inputs (up to 4)
+        for k, v in list(matched_action_cands.items())[:4]:
             if len(criteria) < 8:
                 criteria[k] = v
 
-        # 3. Explicit primitive match (screenshot, scroll, reload)
+        # 7. Explicit primitive match (screenshot, scroll, reload)
         for pk, pv in prim_cands.items():
             if any(w in subtask.lower() for w in ("screenshot", "snapshot", "capture")) and "screenshot" in pk:
                 criteria[pk] = pv
@@ -300,24 +394,29 @@ class LayaEngine:
             elif any(w in subtask.lower() for w in ("go back", "back")) and "go_back" in pk:
                 criteria[pk] = pv
 
-        # 4. If looking for a specific target token/verb and no matched button exists, expose scroll down
-        if not matched_btn_cands and not matched_nav_cands and "browser_scroll_down" in prim_cands:
+        # 8. If looking for a specific target token/verb and no matched button exists, expose scroll down
+        if not matched_action_cands and not matched_nav_cands and "browser_scroll_down" in prim_cands:
             criteria["browser_scroll_down"] = prim_cands["browser_scroll_down"]
 
-        # 5. Other operational tools if space permits
+        # 9. Other operational tools if space permits
         for k, v in list(other_tools.items()):
             if k != "tool_navigate_to_page" and len(criteria) < 8:
                 criteria[k] = v
         if "tool_navigate_to_page" in tool_cands and len(criteria) < 8:
             criteria["tool_navigate_to_page"] = tool_cands["tool_navigate_to_page"]
 
-        # 6. Other navigation links
+        # 10. Other dropdowns if space permits
+        for k, v in list(dropdown_cands.items()):
+            if len(criteria) < 8 and k not in criteria:
+                criteria[k] = v
+
+        # 11. Other navigation links
         for k, v in list(other_nav_cands.items())[:max(0, 9 - len(criteria))]:
             criteria[k] = v
 
-        # 7. Other buttons if space permits
+        # 12. Other buttons if space permits
         remaining_slots = max(0, 10 - len(criteria))
-        for k, v in list(other_btn_cands.items())[:remaining_slots]:
+        for k, v in list(other_action_cands.items())[:remaining_slots]:
             criteria[k] = v
 
         # 8. Mandatory negative option (Prevents forced softmax probability spills onto irrelevant buttons)
@@ -434,6 +533,8 @@ class LayaEngine:
             f"Browser Affordances: can_scroll_down={can_scroll_down}, can_scroll_up={can_scroll_up}, can_go_back={can_go_back}\n\n"
             "Identify the best action to achieve or progress toward this objective:\n"
             "- ALWAYS prefer a WebMCP tool (action='tool_<tool_name>') over clicking screen buttons if a tool matches the goal (e.g. use 'tool_approve_order' for approving orders, 'tool_reject_order' for rejecting orders, 'tool_cancel_order' for cancelling, 'tool_search_products' for search).\n"
+            "- If the objective asks to select an option from a dropdown, combobox, or filter (e.g. 'All Status', 'Category', 'Sort'), return action='click_<dropdown_name>' or action='click_<option_name>' to open or select from the dropdown. Do NOT call text search tools for dropdown filtering.\n"
+            "- If the objective asks to paginate, check each page, or go to all pages, return action='click_next' if a Next button is available and enabled.\n"
             "- If a WebMCP tool achieves it directly on this page, return action='tool_<tool_name>' and params={...}.\n"
             "- If the current page does not have the target feature, identify which navigation link/tab leads to that section (e.g. Products tab for product search, My Orders for order history, Order Management for approving/rejecting orders) and return action='click_<text>' with coords={'x': x, 'y': y} or action='tool_<nav_tool>'.\n"
             "- If clicking a visible screen button or input achieves it, return action='click_<text>' with coords={'x': x, 'y': y}.\n"

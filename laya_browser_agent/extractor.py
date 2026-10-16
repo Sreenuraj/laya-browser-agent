@@ -25,16 +25,18 @@ class SlotExtractor:
 
     def extract(self, task: str, initial_url: str = "") -> StructuredPlan:
         """Structures user input using local Ollama if running, otherwise uses instant heuristics."""
+        clean_task = (task or "").replace("‘", "'").replace("’", "'").replace("“", '"').replace("”", '"')
+
         # 1. Try local Ollama (runs in ~1s if warm) to organize the plan
         try:
-            plan = self._extract_via_ollama(task, initial_url=initial_url)
+            plan = self._extract_via_ollama(clean_task, initial_url=initial_url)
             if plan and plan.subtasks:
                 return plan
         except Exception:
             pass
 
         # 2. Deterministic 0ms heuristic fallback
-        return self._extract_via_heuristics(task)
+        return self._extract_via_heuristics(clean_task)
 
     def _extract_via_ollama(self, task: str, initial_url: str = "") -> Optional[StructuredPlan]:
         url_context = f"\nBrowser initial URL: {initial_url}" if initial_url else ""
@@ -42,7 +44,7 @@ class SlotExtractor:
             "You are an autonomous web agent task planner.\n"
             "Analyze this human user request and return a clean, organized, structured execution plan in JSON:\n"
             "1. 'intent': concise 1-sentence normalized objective summary.\n"
-            "2. 'slots': dictionary of extracted parameters (separate 'username', 'password', 'quantity' as int, 'search' or 'query', etc.)\n"
+            "2. 'slots': dictionary of extracted parameters (separate 'username', 'password', 'quantity' as int, 'search' or 'query' ONLY for text search keywords, 'status' or 'option' for dropdown / status selections, 'dropdown' for target dropdown names). Do NOT put dropdown or status filter values into search/query.\n"
             "3. 'subtasks': ordered list of concise sequential action steps to achieve the goal. Do NOT include opening or navigating to the initial URL (the browser is already open at that page). If login credentials are provided in the task, include 'Log in with credentials' as the very first step before performing actions. Keep subtasks strictly faithful to discrete goals without fabricating artificial sub-steps: do NOT split selecting/picking a product and buying/ordering it into two steps (combine into 'Place order for product'); separate taking a screenshot or logging out into their own individual steps.\n"
             f"{url_context}\n"
             f"User request: {task}\n\n"
@@ -107,42 +109,74 @@ class SlotExtractor:
                     else:
                         slots["quantity"] = 1
 
-                    # D. Filter out generic collection nouns from search/query slots
+                    # D. Filter out dropdown/status/generic terms from search/query slots
+                    dropdown_terms = ("status", "dropdown", "combobox", "out of stock", "in stock", "active", "low stock", "cancelled", "approved", "rejected", "pending", "products", "product", "items", "item", "catalog", "goods", "orders", "order", "all")
                     for sk in ("search", "query"):
-                        if str(slots.get(sk, "")).lower() in ("products", "product", "items", "item", "catalog", "goods", "orders", "order", "all"):
+                        val = str(slots.get(sk, "")).lower()
+                        if any(dt in val for dt in dropdown_terms):
                             slots.pop(sk, None)
 
-                    subtasks = parsed.get("subtasks", [])
-                    if isinstance(subtasks, list) and subtasks:
-                        clean_subtasks = [
-                            str(s).strip() for s in subtasks
-                            if str(s).strip() and not any(w in str(s).lower() for w in ("initial url", "start url", "navigate to initial", "visit initial", "open initial"))
-                        ]
-                        # Merge "select/choose product" + "order/buy product" pairs into single action
-                        merged = []
-                        skip = False
-                        for i in range(len(clean_subtasks)):
-                            if skip:
-                                skip = False
+                    raw_subtasks = parsed.get("subtasks", [])
+                    flattened = []
+                    if isinstance(raw_subtasks, list):
+                        for s in raw_subtasks:
+                            if isinstance(s, dict):
+                                if "steps" in s and isinstance(s["steps"], list):
+                                    flattened.extend([str(step).strip() for step in s["steps"] if step])
+                                elif "step" in s:
+                                    flattened.append(str(s["step"]).strip())
+                                elif "action" in s:
+                                    flattened.append(str(s["action"]).strip())
+                                elif "description" in s:
+                                    flattened.append(str(s["description"]).strip())
+                                else:
+                                    for k, v in s.items():
+                                        if isinstance(v, list):
+                                            flattened.extend([str(item).strip() for item in v if item])
+                                        elif isinstance(v, str) and len(v) > 3:
+                                            flattened.append(v.strip())
+                            elif isinstance(s, list):
+                                flattened.extend([str(item).strip() for item in s if item])
+                            elif s:
+                                flattened.append(str(s).strip())
+
+                    clean_subtasks = [
+                        s for s in flattened
+                        if s and not any(w in s.lower() for w in ("initial url", "start url", "navigate to initial", "visit initial", "open initial"))
+                    ]
+
+                    # Merge pairs:
+                    # 1. "select product" + "order product"
+                    # 2. "check pagination / multiple pages" + "go to all pages / take screenshot"
+                    merged = []
+                    skip = False
+                    for i in range(len(clean_subtasks)):
+                        if skip:
+                            skip = False
+                            continue
+                        st_cur = clean_subtasks[i].lower()
+                        if i + 1 < len(clean_subtasks):
+                            st_nxt = clean_subtasks[i + 1].lower()
+                            if any(w in st_cur for w in ("select", "choose", "pick", "find")) and any(w in st_nxt for w in ("order", "buy", "purchase", "checkout")):
+                                merged.append(clean_subtasks[i + 1])
+                                skip = True
                                 continue
-                            st_cur = clean_subtasks[i].lower()
-                            if i + 1 < len(clean_subtasks):
-                                st_nxt = clean_subtasks[i + 1].lower()
-                                if any(w in st_cur for w in ("select", "choose", "pick", "find")) and any(w in st_nxt for w in ("order", "buy", "purchase", "checkout")):
+                            if any(w in st_cur for w in ("check if there are multiple pages", "check pagination", "check if multiple pages")):
+                                if any(w in st_nxt for w in ("go to", "each page", "all pages")):
                                     merged.append(clean_subtasks[i + 1])
                                     skip = True
                                     continue
-                            merged.append(clean_subtasks[i])
-                        clean_subtasks = merged or clean_subtasks
+                        merged.append(clean_subtasks[i])
+                    clean_subtasks = merged or clean_subtasks
 
-                        if not clean_subtasks:
-                            clean_subtasks = [task]
-                        return StructuredPlan(
-                            intent=intent,
-                            slots=slots,
-                            subtasks=clean_subtasks,
-                            source=f"Local LLM ({self.ollama_model})",
-                        )
+                    if not clean_subtasks:
+                        clean_subtasks = [task]
+                    return StructuredPlan(
+                        intent=intent,
+                        slots=slots,
+                        subtasks=clean_subtasks,
+                        source=f"Local LLM ({self.ollama_model})",
+                    )
         return None
 
     def _extract_via_heuristics(self, task: str) -> StructuredPlan:
@@ -165,19 +199,34 @@ class SlotExtractor:
             params["username"] = user_pair[0].strip()
             params["password"] = user_pair[1].strip()
 
-        # 4. Quoted terms
-        quoted = re.findall(r"[\"']([^\"']+)[\"']", task)
-        if quoted:
-            params["query"] = quoted[0]
-            params["search"] = quoted[0]
+        # 4. Status and dropdown options (e.g. "status as 'out of stock'", "dropdown with 'all status'")
+        status_match = re.search(r"\b(?:status\s+(?:as|to|of)?|status\s*[:=]|option\s*[:=]?)\s*[\"']?([^\"',\.;]+)[\"']?", task, re.IGNORECASE)
+        if status_match:
+            st_val = status_match.group(1).strip()
+            if st_val.lower() not in ("page", "products", "orders", "all", "the", "a"):
+                params["status"] = st_val
+                params["option"] = st_val
 
-        # 5. Search queries without quotes
-        search_match = re.search(r"\b(?:search|find|filter|query)(?:\s+(?:for|in|by))?\s+([a-zA-Z0-9_\-]+)", task, re.IGNORECASE)
+        dropdown_match = re.search(r"\b(?:dropdown\s+(?:with|named|for|called)?|combobox\s+(?:with|named)?|click\s+one\s+with)\s*[\"']?([^\"',\.;]+)[\"']?", task, re.IGNORECASE)
+        if dropdown_match:
+            dd_val = dropdown_match.group(1).strip()
+            if dd_val.lower() not in ("page", "products", "orders"):
+                params["dropdown"] = dd_val
+
+        # 5. Explicit search queries (require search/find/query/lookup verbs)
+        search_match = re.search(r"\b(?:search|find|lookup|query)\s+(?:for\s+|in\s+|by\s+)?[\"']?([a-zA-Z0-9_\-]+)[\"']?", task, re.IGNORECASE)
         if search_match and "search" not in params:
             kw = search_match.group(1).strip()
-            if kw.lower() not in ("products", "product", "items", "item", "catalog", "goods", "orders", "order", "all"):
+            if kw.lower() not in ("products", "product", "items", "item", "catalog", "goods", "orders", "order", "all", "each", "page", "pages", "status", "dropdown"):
                 params["search"] = kw
                 params["query"] = kw
+        elif "search" not in params and "status" not in params:
+            quoted = re.findall(r"[\"']([^\"']+)[\"']", task)
+            if quoted:
+                first_q = quoted[0].strip()
+                if not any(w in first_q.lower() for w in ("status", "dropdown", "select", "all", "out of stock", "active", "pending", "approved")):
+                    params["query"] = first_q
+                    params["search"] = first_q
 
         # 6. Quantities: match explicit unit words or "buy/order N" (prevent matching numbers inside passwords)
         qty_match = re.search(r"\b(\d+)\s+(?:items?|units?|pieces?|tickets?|qty)\b", task, re.IGNORECASE)

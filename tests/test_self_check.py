@@ -304,6 +304,86 @@ def test_execution_report_generation():
     print("      ✓ Execution report generation in reports/ verified!")
 
 
+def test_progressive_extraction_and_dropdowns_and_pagination():
+    print("[8/8] Testing progressive hierarchical extraction, dropdowns, regions, and pagination...")
+    from laya_browser_agent.laya_engine import extract_page_candidates
+    from laya_browser_agent.extractor import SlotExtractor
+
+    # 1. Test slot extraction separation: filter values are NOT in search/query
+    extractor = SlotExtractor()
+    plan = extractor._extract_via_heuristics("click one with 'all status' and select from dropdown select status as 'out of stock'")
+    assert plan.slots.get("status") == "out of stock"
+    assert plan.slots.get("dropdown") == "all status"
+    assert "search" not in plan.slots or plan.slots["search"] == ""
+    assert "query" not in plan.slots or plan.slots["query"] == ""
+
+    # 2. Test candidate extraction with semantic regions
+    screen_elements = [
+        {"tag": "input", "type": "text", "text": "Search items...", "name": "q", "id": "search-input", "region": "toolbar", "x": 100, "y": 100},
+        {"tag": "button", "role": "combobox", "text": "All Status", "id": "status-select", "region": "toolbar", "x": 300, "y": 100},
+        {"tag": "div", "role": "option", "text": "Out of Stock", "id": "opt-oos", "region": "overlay", "x": 300, "y": 150},
+        {"tag": "button", "text": "Next", "region": "pagination", "disabled": False, "x": 500, "y": 800},
+        {"tag": "a", "href": "/orders", "text": "Orders", "region": "navigation", "x": 50, "y": 30},
+    ]
+
+    cands = extract_page_candidates(
+        available_tools=[],
+        screen_elements=screen_elements,
+        current_url="http://localhost:3000/catalog",
+    )
+
+    assert "click_all_status" in cands
+    assert cands["click_all_status"]["type"] == "dropdown"
+    assert "[Toolbar]" in cands["click_all_status"]["label"]
+
+    assert "click_out_of_stock" in cands
+    assert cands["click_out_of_stock"]["type"] == "option"
+    assert "[Overlay]" in cands["click_out_of_stock"]["label"]
+
+    assert "click_next" in cands
+    assert cands["click_next"]["type"] == "pagination"
+    assert "[Pagination]" in cands["click_next"]["label"]
+
+    assert "click_orders" in cands
+    assert cands["click_orders"]["type"] == "navigate"
+    assert "[Navigation]" in cands["click_orders"]["label"]
+
+    # 3. Test Playwright driver region detection and select_dropdown
+    html = """<!DOCTYPE html>
+    <html>
+    <head><title>Progressive Extraction Test</title></head>
+    <body>
+        <nav><a href="/home">Home</a></nav>
+        <div class="toolbar">
+            <input type="text" placeholder="Search..." id="search" />
+            <select id="category-select" name="category">
+                <option value="all">All Categories</option>
+                <option value="electronics">Electronics</option>
+            </select>
+        </div>
+        <main><table><tr><td>Item 1</td></tr></table></main>
+        <div class="pagination"><button>Next</button></div>
+    </body>
+    </html>"""
+    driver = PlaywrightWebMcpDriver(headed=False)
+    try:
+        driver.start(f"data:text/html,{html}")
+        regions = driver.get_screen_regions()
+        region_names = [r["name"] for r in regions]
+        assert "navigation" in region_names
+        assert "toolbar" in region_names
+        assert "content" in region_names
+        assert "pagination" in region_names
+
+        # Test native select actuation
+        res = driver.select_dropdown("category-select", "Electronics")
+        assert res is True
+    finally:
+        driver.close()
+
+    print("      ✓ Progressive hierarchical extraction, dropdowns, regions, and pagination verified!")
+
+
 if __name__ == "__main__":
     test_extractor()
     test_param_resolution()
@@ -312,6 +392,7 @@ if __name__ == "__main__":
     test_e2e_headless_driver()
     test_page_candidate_extraction_and_routing()
     test_execution_report_generation()
+    test_progressive_extraction_and_dropdowns_and_pagination()
     print("\n✅ All self-checks passed successfully!")
 
 

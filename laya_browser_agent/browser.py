@@ -180,12 +180,12 @@ class PlaywrightWebMcpDriver:
         return self.page.evaluate(js_code, {"name": tool_name, "params": params})
 
     def get_screen_elements(self) -> List[Dict[str, Any]]:
-        """Extracts visible interactive screen elements with precise coordinates (x, y)."""
+        """Extracts visible interactive screen elements with precise coordinates, roles, and semantic regions."""
         js_code = r"""
         () => {
             const elements = [];
             const seen = new Set();
-            const clickable = Array.from(document.querySelectorAll('a, button, input, textarea, select, [role="button"], [role="link"], [role="tab"]'));
+            const clickable = Array.from(document.querySelectorAll('a, button, input, textarea, select, [role="button"], [role="link"], [role="tab"], [role="combobox"], [role="option"], [role="menuitem"], [data-radix-collection-item]'));
             
             for (const el of clickable) {
                 // Skip button children inside links to prevent duplicate navbar elements
@@ -244,10 +244,25 @@ class PlaywrightWebMcpDriver:
                 if (seen.has(key)) continue;
                 seen.add(key);
 
+                // Semantic region classification
+                let region = 'content';
+                if (el.closest('dialog, [role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"], [data-radix-popper-content-wrapper]')) {
+                    region = 'overlay';
+                } else if (el.closest('header, nav, [role="navigation"]')) {
+                    region = 'navigation';
+                } else if (el.closest('nav[aria-label*="pagination" i], .pagination, [data-pagination]')) {
+                    region = 'pagination';
+                } else if (el.closest('form, [role="search"], [role="toolbar"], .filters, .toolbar') || el.matches('[role="combobox"], select, input[type="text"], input[type="search"]')) {
+                    region = 'toolbar';
+                }
+
                 elements.push({
                     tag: el.tagName.toLowerCase(),
                     type: (el.type || '').toLowerCase(),
                     text: text.slice(0, 45),
+                    role: el.getAttribute('role') || '',
+                    aria_expanded: el.getAttribute('aria-expanded') || '',
+                    region: region,
                     name: el.name || '',
                     placeholder: el.placeholder || '',
                     href: el.getAttribute('href') || '',
@@ -260,7 +275,42 @@ class PlaywrightWebMcpDriver:
                 });
                 if (elements.length >= 60) break;
             }
+
+            // Prioritize active overlays/dialogs/popovers so model operates inside them first
+            elements.sort((a, b) => (a.region === 'overlay' ? -1 : (b.region === 'overlay' ? 1 : 0)));
             return elements;
+        }
+        """
+        try:
+            return self.page.evaluate(js_code) or []
+        except Exception:
+            return []
+
+    def get_screen_regions(self) -> List[Dict[str, Any]]:
+        """Extracts high-level semantic regions on the active page (navigation, toolbar, content, overlay, pagination)."""
+        js_code = r"""
+        () => {
+            const regions = [];
+            if (document.querySelector('dialog, [role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"], [data-radix-popper-content-wrapper]')) {
+                regions.push({ name: 'overlay', label: 'Active modal / dialog / popover overlay' });
+            }
+            if (document.querySelector('header, nav, [role="navigation"]')) {
+                regions.push({ name: 'navigation', label: 'Top / sidebar navigation bar' });
+            }
+            if (document.querySelector('form, [role="search"], [role="toolbar"], [role="combobox"], select, .filters, .toolbar')) {
+                regions.push({ name: 'toolbar', label: 'Search and filter toolbar controls' });
+            }
+            if (document.querySelector('table, tbody, [data-row], .grid, main')) {
+                regions.push({ name: 'content', label: 'Main content data grid / items list' });
+            }
+            const hasNext = Array.from(document.querySelectorAll('button, a')).some(b => {
+                const t = (b.innerText || '').toLowerCase();
+                return t.includes('next') || t.includes('previous') || t.includes('page');
+            });
+            if (document.querySelector('nav[aria-label*="pagination" i], .pagination') || hasNext) {
+                regions.push({ name: 'pagination', label: 'Pagination controls (next/previous pages)' });
+            }
+            return regions;
         }
         """
         try:
@@ -397,6 +447,67 @@ class PlaywrightWebMcpDriver:
                 return True
             except Exception:
                 pass
+
+        return False
+
+    def select_dropdown(self, target: str = "", value: str = "") -> bool:
+        """
+        Selects an option from a native HTML <select> or modern custom dropdown (Radix UI / Shadcn / ARIA combobox).
+        1. If native <select>, uses page.select_option.
+        2. If modern combobox / dropdown:
+           - Clicks the trigger matching target (e.g. 'All Status' or 'Status').
+           - Waits 200ms for option popover to appear.
+           - Clicks the option matching value (e.g. 'Out of Stock').
+        """
+        clean_target = (target or "").strip()
+        clean_value = (value or "").strip()
+        if not clean_value:
+            return False
+
+        # 1. Native HTML <select>
+        if clean_target:
+            try:
+                sel = self.page.locator(f"select[name*={json.dumps(clean_target)} i], select#{clean_target}").first
+                if sel.count() > 0:
+                    sel.select_option(label=clean_value)
+                    return True
+            except Exception:
+                pass
+
+        # 2. Open combobox / dropdown trigger if not already open
+        if clean_target:
+            for t_str in (
+                f"button[role='combobox']:has-text({json.dumps(clean_target)})",
+                f"[role='combobox']:has-text({json.dumps(clean_target)})",
+                f"button:has-text({json.dumps(clean_target)})",
+            ):
+                try:
+                    cand = self.page.locator(t_str).first
+                    if cand.count() > 0 and cand.is_visible():
+                        cand.scroll_into_view_if_needed(timeout=1000)
+                        cand.click(timeout=1500)
+                        self.page.wait_for_timeout(250)
+                        break
+                except Exception:
+                    continue
+
+        # 3. Click the option
+        for opt_str in (
+            f"[role='option']:has-text({json.dumps(clean_value)})",
+            f"[role='menuitem']:has-text({json.dumps(clean_value)})",
+            f"[data-radix-collection-item]:has-text({json.dumps(clean_value)})",
+            f"span:has-text({json.dumps(clean_value)})",
+            f"text={json.dumps(clean_value)}",
+        ):
+            try:
+                opt = self.page.locator(opt_str).first
+                if opt.count() > 0 and opt.is_visible():
+                    opt.scroll_into_view_if_needed(timeout=1000)
+                    opt.click(timeout=1500)
+                    self.page.wait_for_timeout(300)
+                    return True
+            except Exception:
+                continue
 
         return False
 

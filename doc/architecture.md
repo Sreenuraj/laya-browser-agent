@@ -232,3 +232,62 @@ In real-world web applications, elements are frequently not visible on the initi
 
 2. **Event-Driven DOM Settling**:
    - Replaced multi-second fixed sleeps with Playwright event-driven settling (`domcontentloaded` + 300ms network settling cap), cutting multi-step workflow execution times from ~90s down to sub-35s.
+
+---
+
+## 9. Hierarchical & Progressive 2-Pass Extraction (Region Decomposition & Overlay Priority)
+
+In complex enterprise single-page applications, flat DOM extraction (extracting all 50–100 clickable elements in viewport) introduces three major failure modes:
+1. **Affordance Conflation**: An agent looking for a filter or status dropdown might inadvertently fill a neighboring keyword search box because both are labeled with similar entity nouns.
+2. **Token Spillage**: Overcrowding the decision model's context with 50+ background buttons leaves no token head budget for precise descriptions.
+3. **Modal & Popover Occlusion**: When a dropdown popover, confirmation modal, or drawer opens, elements in the background are visually obscured and inert, yet flat extraction treats them with equal weight.
+
+### 9.1 Semantic Region Decomposition
+
+Every interactive element extracted by `get_screen_elements()` is dynamically classified into one of five semantic landmarks:
+
+| Region | Target DOM Selectors | Purpose & Examples |
+| :--- | :--- | :--- |
+| `overlay` | `dialog, [role="dialog"], [role="menu"], [role="listbox"], [data-radix-popper-content-wrapper]` | Active modal windows, opened combobox option lists, confirmation popups. |
+| `toolbar` | `form, [role="search"], [role="toolbar"], [role="combobox"], select, input, .filters` | Search bars, filter dropdowns, sort selectors, action toolbars. |
+| `content` | `table, tbody, [data-row], .grid, main` | Data tables, product lists, row action buttons (Buy, Cancel, Approve). |
+| `navigation` | `header, nav, [role="navigation"]` | Main menu tabs, top bar routes (`/dashboard`, `/products`, `/orders`). |
+| `pagination` | `nav[aria-label*="pagination" i], .pagination, button:has-text("Next")` | Next/previous page buttons, page numbers. |
+
+### 9.2 The Progressive 2-Pass Pipeline
+
+```mermaid
+flowchart TD
+    A["Human Subtask: e.g. Select status 'Out of Stock'"] --> B["Pass 1: Semantic Affordance Perception"]
+    B --> C["Detect Active Overlay?"]
+    C -- Yes --> D["Prioritize Overlay Candidates [Overlay] (Modal/Popover Options)"]
+    C -- No --> E["Bucket by Semantic Region: Toolbar | Content | Nav | Pagination"]
+    E --> F["Laya MLX Decision Policy (<15ms)"]
+    D --> F
+    F --> G["Actuation: Combobox Trigger / Option Selection / Row Action"]
+    G --> H["Pass 2: Dynamic Popover Expansion (if Combobox triggered)"]
+    H --> I["Isolate Dynamic Options from Popover & Select Target"]
+```
+
+1. **Pass 1 (Global Affordance Perception & Region Tagging)**:
+   - `extract_page_candidates` extracts all interactive elements, tagging each with its region and type (`[Toolbar]`, `[Navigation]`, `[Content]`, `[Overlay]`, `[Pagination]`).
+   - If an active overlay exists on screen, overlay candidates are automatically prioritized at the head of the list.
+2. **Pass 2 (Focused Expansion & Option Selection)**:
+   - When a dropdown trigger or combobox is selected, `select_dropdown(target, value)` handles both traditional HTML `<select>` elements and modern ARIA comboboxes (Radix UI / Shadcn UI):
+     - Clicks the combobox trigger (e.g. `All Status`).
+     - Awaits the dynamic option popover.
+     - Clicks the exact matching option (`Out of Stock`).
+
+### 9.3 Multi-Page Pagination Loop Invariant
+
+For batch subtasks covering multi-page datasets (e.g. *"go to all pages and take a screenshot"*, *"cancel all pending orders across all pages"*):
+- The agent executes the active operation on the current page.
+- It checks `fresh_elements` for a non-disabled `Next` button in the `pagination` region.
+- If `Next` exists and is actionable, the subtask remains active, clicks `Next`, waits for DOM settling, and repeats until the final page is reached.
+
+### 9.4 Intent Parameter Isolation
+
+In `SlotExtractor`, parameter slots are strictly isolated by action semantics:
+- Filter values (`status`, `option`, `dropdown`) are explicitly separated from text search keywords (`search`, `query`).
+- Terms such as `"out of stock"`, `"active"`, `"all status"` are purged from search query slots, preventing the agent from typing filter names into free-text search inputs.
+

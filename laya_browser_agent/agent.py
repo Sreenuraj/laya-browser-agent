@@ -153,11 +153,12 @@ class LayaAgent:
 
                 # Direct fast path for browser primitives (100% deterministic, ~10ms execution, zero model calls)
                 st_low = active_subtask.lower().strip()
-                is_sc = any(w in st_low for w in ("take screenshot", "take a screenshot", "capture screen", "save screenshot", "take snapshot", "screenshot"))
-                is_sc_down = any(w in st_low for w in ("scroll down", "scroll page down", "scroll to bottom"))
-                is_sc_up = any(w in st_low for w in ("scroll up", "scroll page up", "scroll to top"))
-                is_back = st_low in ("go back", "back", "navigate back", "previous page")
-                is_reload = st_low in ("refresh", "reload", "refresh page", "reload page")
+                is_pagination_loop = any(w in st_low for w in ("pagination", "all pages", "each page", "every page", "multiple pages"))
+                is_sc = not is_pagination_loop and any(w in st_low for w in ("take screenshot", "take a screenshot", "capture screen", "save screenshot", "take snapshot", "screenshot"))
+                is_sc_down = not is_pagination_loop and any(w in st_low for w in ("scroll down", "scroll page down", "scroll to bottom"))
+                is_sc_up = not is_pagination_loop and any(w in st_low for w in ("scroll up", "scroll page up", "scroll to top"))
+                is_back = not is_pagination_loop and st_low in ("go back", "back", "navigate back", "previous page")
+                is_reload = not is_pagination_loop and st_low in ("refresh", "reload", "refresh page", "reload page")
 
                 if is_sc or is_sc_down or is_sc_up or is_back or is_reload:
                     prim_start = time.time()
@@ -209,6 +210,80 @@ class LayaAgent:
                         self.event_callback(event)
                     self.current_subtask_idx += 1
                     continue
+
+                # 2.5 Autonomous Multi-Page Pagination Loop Handler
+                if is_pagination_loop:
+                    next_btn = next((
+                        el for el in screen_elements
+                        if el.get("tag") in ("button", "a") and el.get("text", "").strip().lower() == "next"
+                    ), None)
+                    has_next = bool(next_btn and not next_btn.get("disabled"))
+                    wants_sc = any(w in st_low for w in ("screenshot", "snapshot", "capture"))
+                    last_was_sc = bool(self.history and any("browser_take_screenshot" in h for h in self.history[-1:]))
+
+                    if wants_sc and not last_was_sc:
+                        # Capture screenshot of the current page in the pagination flow
+                        report_out_dir = os.path.dirname(self.report_file) or self.report_dir
+                        os.makedirs(report_out_dir, exist_ok=True)
+                        sc_path = os.path.join(report_out_dir, f"screenshot_step_{step_num}.png")
+                        saved_path = self.driver.take_screenshot(sc_path)
+                        prim_dur = (time.time() - step_start) * 1000
+                        event = AgentStepEvent(
+                            step=step_num,
+                            subtask=active_subtask,
+                            url=current_url,
+                            title=page_title,
+                            available_tools=tools,
+                            chosen_action="browser_take_screenshot",
+                            confidence=1.0,
+                            probabilities={},
+                            tool_params={"path": saved_path},
+                            tool_result={"screenshot": saved_path},
+                            duration_ms=prim_dur,
+                            engine_info="Pagination Loop: Page Screenshot",
+                        )
+                        self.steps_taken.append(event)
+                        if self.event_callback:
+                            self.event_callback(event)
+                        self.history.append(f"browser_take_screenshot({json.dumps({'path': saved_path})})")
+                        if not has_next:
+                            self.current_subtask_idx += 1
+                        continue
+
+                    elif has_next:
+                        # Click Next to advance to the next page
+                        nx = next_btn.get("x")
+                        ny = next_btn.get("y")
+                        self.driver.click(target="Next", x=nx, y=ny)
+                        self.driver.wait_for_settled(timeout_ms=1000)
+                        if self.engine:
+                            self.engine.invalidate_cache(current_url)
+                        prim_dur = (time.time() - step_start) * 1000
+                        event = AgentStepEvent(
+                            step=step_num,
+                            subtask=active_subtask,
+                            url=current_url,
+                            title=page_title,
+                            available_tools=tools,
+                            chosen_action="click_next",
+                            confidence=1.0,
+                            probabilities={},
+                            tool_params={"target": "Next", "x": nx, "y": ny},
+                            tool_result={"clicked": "Next", "success": True},
+                            duration_ms=prim_dur,
+                            engine_info="Pagination Loop: Next Page",
+                        )
+                        self.steps_taken.append(event)
+                        if self.event_callback:
+                            self.event_callback(event)
+                        self.history.append("click_next({'target': 'Next'})")
+                        # Keep active subtask to process the newly opened page
+                        continue
+
+                    else:
+                        # Pagination complete
+                        self.current_subtask_idx += 1
+                        continue
 
                 # 3. Laya MLX Decision Policy with Screen Perception and Dynamic Intent Decomposition
                 chosen, confidence, fallback_params, engine_info = self.engine.decide_next_action(
@@ -378,9 +453,33 @@ class LayaAgent:
                     target_name = clean_label
                     if tok and tok not in target_name:
                         target_name = f"{clean_label} {tok}"
-                    success = self.driver.click(target=target_name, x=target_x, y=target_y)
-                    result = {"clicked": target_name, "success": success}
-                    params = {"target": target_name, "x": target_x, "y": target_y}
+
+                    # Check if this click targets a dropdown/combobox with a desired option
+                    cand_meta = {}
+                    if self.engine and current_url:
+                        cand_meta = self.engine.site_cache.get(normalize_route_key(current_url), {}).get(chosen, {})
+
+                    option_val = self.extracted_slots.get("status") or self.extracted_slots.get("option") or self.extracted_slots.get("filter")
+                    is_dropdown = (
+                        cand_meta.get("type") == "dropdown"
+                        or any(w in clean_label for w in ("status", "category", "combobox", "dropdown", "select"))
+                        or any(w in active_subtask.lower() for w in ("dropdown", "combobox", "select status", "select option"))
+                        or any(e.get("role") == "combobox" for e in screen_elements if clean_label in e.get("text", "").lower())
+                    )
+
+                    if is_dropdown and option_val:
+                        success = self.driver.select_dropdown(target=clean_label, value=str(option_val))
+                        if success:
+                            result = {"selected_dropdown": clean_label, "option": str(option_val), "success": True}
+                            params = {"dropdown": clean_label, "value": str(option_val)}
+                        else:
+                            success = self.driver.click(target=target_name, x=target_x, y=target_y)
+                            result = {"clicked": target_name, "success": success}
+                            params = {"target": target_name, "x": target_x, "y": target_y}
+                    else:
+                        success = self.driver.click(target=target_name, x=target_x, y=target_y)
+                        result = {"clicked": target_name, "success": success}
+                        params = {"target": target_name, "x": target_x, "y": target_y}
 
                 elif chosen == "other":
                     # Target element was not in view. If page allows scrolling, perform exploratory mousewheel
@@ -481,24 +580,37 @@ class LayaAgent:
                         # never advance operational subtasks on mere navigation clicks!
                         pass
                     elif is_batch_subtask:
-                        # For batch subtasks (e.g. "cancel all open orders"), check if more actionable elements remain on screen
+                        # For batch subtasks (e.g. "cancel all open orders" or multi-page pagination)
                         if self.engine:
                             self.engine.invalidate_cache(new_url)
                         fresh_elements = self.driver.get_screen_elements()
-                        action_verb = next((v for v in ("cancel", "delete", "remove", "approve", "reject") if v in active_subtask.lower()), "")
-                        more_exist = False
-                        if action_verb:
-                            more_exist = any(
-                                action_verb in el.get("text", "").lower()
+                        is_pagination_subtask = any(w in active_subtask.lower() for w in ("page", "pagination", "next page"))
+                        if is_pagination_subtask:
+                            has_next = any(
+                                "next" in el.get("text", "").lower() and not el.get("disabled")
                                 for el in fresh_elements
                                 if el.get("tag") in ("button", "a")
                             )
-                        if more_exist:
-                            # Keep subtask active to process next item in batch
-                            pass
+                            if has_next and chosen not in ("finish", "tool_logout_user"):
+                                pass
+                            else:
+                                self.current_subtask_idx += 1
+                                consecutive_scrolls = 0
                         else:
-                            self.current_subtask_idx += 1
-                            consecutive_scrolls = 0
+                            action_verb = next((v for v in ("cancel", "delete", "remove", "approve", "reject", "buy", "order") if v in active_subtask.lower()), "")
+                            more_exist = False
+                            if action_verb:
+                                more_exist = any(
+                                    action_verb in el.get("text", "").lower()
+                                    for el in fresh_elements
+                                    if el.get("tag") in ("button", "a") and not el.get("disabled")
+                                )
+                            if more_exist:
+                                # Keep subtask active to process next item in batch
+                                pass
+                            else:
+                                self.current_subtask_idx += 1
+                                consecutive_scrolls = 0
                     else:
                         self.current_subtask_idx += 1
                         consecutive_scrolls = 0
