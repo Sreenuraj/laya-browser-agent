@@ -1,9 +1,8 @@
 """Modern Terminal UI and CLI for Laya Browser Agent."""
 
 import argparse
+import os
 import sys
-import time
-from typing import Any, Dict
 
 from rich.console import Console
 from rich.panel import Panel
@@ -47,7 +46,9 @@ def render_step_event(event: AgentStepEvent):
     action_style = "bold green" if is_finish else "bold magenta"
     action_label = f"[{action_style}]{event.chosen_action}[/{action_style}]"
     conf_pct = f"{event.confidence * 100:.1f}%"
-    table.add_row("Laya Decision", f"{action_label} (Confidence: [bold]{conf_pct}[/bold], Latency: [yellow]{event.duration_ms:.1f}ms[/yellow])")
+    table.add_row("Active Subtask", f"[bold yellow]{event.subtask}[/bold yellow]")
+    table.add_row("Action", f"{action_label} (Confidence: [bold]{conf_pct}[/bold], Latency: [yellow]{event.duration_ms:.1f}ms[/yellow])")
+    table.add_row("Engine", f"[cyan]{event.engine_info}[/cyan]")
 
     if event.tool_params:
         table.add_row("Parameters", f"[cyan]{event.tool_params}[/cyan]")
@@ -75,6 +76,10 @@ def main():
     parser.add_argument("--steps", type=int, default=15, help="Maximum number of decision steps (default: 15)")
     parser.add_argument("--model", type=str, default="aac6fef/laya-mlx", help="Hugging Face model ID for Laya MLX")
     parser.add_argument("--ollama-model", type=str, default="llama3.1:8b", help="Local Ollama model for parameter extraction")
+    parser.add_argument("--report", dest="report", action="store_true", default=True, help="Generate detailed Markdown execution report (default: True)")
+    parser.add_argument("--no-report", dest="report", action="store_false", help="Disable generating execution report")
+    parser.add_argument("--report-dir", type=str, default="reports", help="Directory for execution reports and visual artifacts (default: reports)")
+    parser.add_argument("--report-file", type=str, default=None, help="Path to write execution report (default: <report-dir>/execution_report.md)")
 
     args = parser.parse_args()
 
@@ -118,6 +123,8 @@ def main():
     config_table.add_row("Browser Mode", "[green]Headed (Visible)[/green]" if headed else "[blue]Headless (Background)[/blue]")
     config_table.add_row("Decision Model", args.model)
     config_table.add_row("Max Step Budget", str(args.steps))
+    effective_report_file = args.report_file or os.path.join(args.report_dir, "execution_report.md")
+    config_table.add_row("Execution Report", f"[green]Enabled[/green] ({effective_report_file})" if args.report else "[dim]Disabled[/dim]")
     console.print(Panel(config_table, title="[bold]Session Configuration[/bold]", border_style="blue"))
 
     # Instantiate Agent
@@ -129,7 +136,34 @@ def main():
         model_id=args.model,
         ollama_model=args.ollama_model,
         event_callback=render_step_event,
+        generate_report=args.report,
+        report_dir=args.report_dir,
+        report_file=effective_report_file,
     )
+
+    # Structure initial human input upfront using local LLM
+    with console.status("[bold cyan]🧠 Organizing and structuring initial human request...[/bold cyan]"):
+        plan = agent.prepare_plan()
+
+    # Display Organized Plan
+    plan_table = Table(show_header=False, box=None, padding=(0, 1))
+    plan_table.add_column("Key", style="bold green", width=18)
+    plan_table.add_column("Value")
+    plan_table.add_row("Structured Intent", f"[bold white]{plan.intent}[/bold white]")
+    plan_table.add_row("Planner Engine", f"[cyan]{plan.source}[/cyan]")
+
+    if plan.slots:
+        # Mask password for secure display
+        display_slots = dict(plan.slots)
+        if "password" in display_slots:
+            display_slots["password"] = "••••••••"
+        slots_str = ", ".join([f"[bold]{k}[/bold]={repr(v)}" for k, v in display_slots.items()])
+        plan_table.add_row("Extracted Slots", slots_str)
+
+    subtasks_str = "\n".join([f"  [bold cyan]{i+1}.[/bold cyan] {step}" for i, step in enumerate(plan.subtasks)])
+    plan_table.add_row("Sequential Plan", subtasks_str)
+
+    console.print(Panel(plan_table, title="[bold green]📋 Initial Request: Structured & Organized[/bold green]", border_style="green"))
 
     console.print("\n[bold yellow]🚀 Launching agent session...[/bold yellow]\n")
 
@@ -148,6 +182,10 @@ def main():
         receipt_table.add_row("Execution Time", f"{receipt.get('total_time_seconds', 0.0):.2f}s")
         receipt_table.add_row("API Cost", "[bold green]$0.00 (Zero Cloud Calls)[/bold green]")
         receipt_table.add_row("Extracted Slots", str(agent.extracted_slots))
+        if receipt.get("report_file"):
+            receipt_table.add_row("Execution Report", f"[cyan]{receipt.get('report_file')}[/cyan]")
+        if receipt.get("screenshot"):
+            receipt_table.add_row("Visual Proof", f"[cyan]{receipt.get('screenshot')}[/cyan]")
 
         console.print("\n")
         console.print(Panel(receipt_table, title="[bold green]Execution Summary Receipt[/bold green]", border_style="green"))
