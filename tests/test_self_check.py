@@ -159,7 +159,20 @@ def test_e2e_headless_driver():
         # Verify tool execution
         res = driver.call_tool("submit_feedback", {"email": "tester@domain.com", "rating": 5})
         assert res.get("status") == "submitted"
-        print("      ✓ Headless browser and tool execution verified!")
+
+        # Verify browser primitives and Playwright native actionability
+        sc_path = driver.take_screenshot("reports/.test_primitive_screenshot.png")
+        assert os.path.exists(sc_path)
+        os.remove(sc_path)
+        driver.mousewheel(0, 100)
+        scroll_st = driver.get_scroll_state()
+        assert "can_scroll_down" in scroll_st
+
+        # Verify Playwright native locator fill and click
+        driver.fill(target="email", value="test@domain.com")
+        driver.click(target="Send")
+
+        print("      ✓ Headless browser, tool execution, and Playwright primitives verified!")
     finally:
         driver.close()
 

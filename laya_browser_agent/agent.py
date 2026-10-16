@@ -101,22 +101,25 @@ class LayaAgent:
 
         failed_actions: set[str] = set()
         last_url: str = ""
+        consecutive_scrolls: int = 0
 
         try:
             for step_num in range(1, self.max_steps + 1):
                 step_start = time.time()
 
-                # Settle page and discover registered tools & visible screen elements
-                self.driver.wait_for_settled(timeout_ms=2500)
+                # Settle page and discover registered tools, visible screen elements, and scroll state
+                self.driver.wait_for_settled(timeout_ms=1000)
                 current_url = self.driver.get_active_url()
                 page_title = self.driver.get_page_title()
                 tools = self.driver.discover_tools()
                 screen_elements = self.driver.get_screen_elements()
+                scroll_state = self.driver.get_scroll_state()
 
                 # Reset failed actions if page navigated
                 if current_url != last_url:
                     failed_actions.clear()
                     last_url = current_url
+                    consecutive_scrolls = 0
 
                 # Skip subtasks that describe navigating to where the browser already is, or passive verification steps
                 while self.current_subtask_idx < len(self.subtasks):
@@ -148,6 +151,65 @@ class LayaAgent:
                 else:
                     active_subtask = "Finish goal"
 
+                # Direct fast path for browser primitives (100% deterministic, ~10ms execution, zero model calls)
+                st_low = active_subtask.lower().strip()
+                is_sc = any(w in st_low for w in ("take screenshot", "take a screenshot", "capture screen", "save screenshot", "take snapshot", "screenshot"))
+                is_sc_down = any(w in st_low for w in ("scroll down", "scroll page down", "scroll to bottom"))
+                is_sc_up = any(w in st_low for w in ("scroll up", "scroll page up", "scroll to top"))
+                is_back = st_low in ("go back", "back", "navigate back", "previous page")
+                is_reload = st_low in ("refresh", "reload", "refresh page", "reload page")
+
+                if is_sc or is_sc_down or is_sc_up or is_back or is_reload:
+                    prim_start = time.time()
+                    prim_action = ""
+                    prim_result = None
+                    prim_params = {}
+                    if is_sc:
+                        prim_action = "browser_take_screenshot"
+                        report_out_dir = os.path.dirname(self.report_file) or self.report_dir
+                        os.makedirs(report_out_dir, exist_ok=True)
+                        sc_path = os.path.join(report_out_dir, f"screenshot_step_{step_num}.png")
+                        saved_path = self.driver.take_screenshot(sc_path)
+                        prim_result = {"screenshot": saved_path}
+                        prim_params = {"path": saved_path}
+                    elif is_sc_down:
+                        prim_action = "browser_scroll_down"
+                        self.driver.mousewheel(0, 600)
+                        prim_result = {"status": "scrolled_down", "amount": 600}
+                    elif is_sc_up:
+                        prim_action = "browser_scroll_up"
+                        self.driver.mousewheel(0, -600)
+                        prim_result = {"status": "scrolled_up", "amount": 600}
+                    elif is_back:
+                        prim_action = "browser_go_back"
+                        self.driver.go_back()
+                        prim_result = {"status": "navigated_back"}
+                    elif is_reload:
+                        prim_action = "browser_reload"
+                        self.driver.reload()
+                        prim_result = {"status": "reloaded"}
+
+                    prim_dur = (time.time() - prim_start) * 1000
+                    event = AgentStepEvent(
+                        step=step_num,
+                        subtask=active_subtask,
+                        url=current_url,
+                        title=page_title,
+                        available_tools=tools,
+                        chosen_action=prim_action,
+                        confidence=1.0,
+                        probabilities={},
+                        tool_params=prim_params,
+                        tool_result=prim_result,
+                        duration_ms=prim_dur,
+                        engine_info="Browser Native Primitive (10ms)",
+                    )
+                    self.steps_taken.append(event)
+                    if self.event_callback:
+                        self.event_callback(event)
+                    self.current_subtask_idx += 1
+                    continue
+
                 # 3. Laya MLX Decision Policy with Screen Perception and Dynamic Intent Decomposition
                 chosen, confidence, fallback_params, engine_info = self.engine.decide_next_action(
                     subtask=active_subtask,
@@ -159,6 +221,7 @@ class LayaAgent:
                     last_result=self.last_result,
                     extracted_slots=self.extracted_slots,
                     excluded_actions=list(failed_actions),
+                    scroll_state=scroll_state,
                 )
 
                 # Goal finished
@@ -183,7 +246,7 @@ class LayaAgent:
                         self.event_callback(event)
                     break
 
-                # 4. Action Actuation (WebMCP tool, Form Input, or Screen Coordinate Click)
+                # 4. Action Actuation (WebMCP tool, Playwright Browser Primitives, Form Input, or Click)
                 result = None
                 params: Dict[str, Any] = {}
 
@@ -197,6 +260,17 @@ class LayaAgent:
                         tool_def, screen_elements=screen_elements, fallback_params=fallback_params
                     )
 
+                    schema = tool_def.get("inputSchema") or {} if tool_def else {}
+                    required = schema.get("required") or []
+                    missing_required = [r for r in required if r not in params or params[r] in (None, "")]
+                    if missing_required:
+                        # Cannot invoke tool without required params. Mark as unusable for this state.
+                        failed_actions.add(chosen)
+                        failed_actions.add(tool_name)
+                        if self.engine:
+                            self.engine.invalidate_cache(current_url)
+                        continue
+
                     try:
                         raw_result = self.driver.call_tool(tool_name, params)
                         result = self._parse_tool_result(raw_result)
@@ -209,26 +283,43 @@ class LayaAgent:
                             self.engine.invalidate_cache(current_url)
                         match_el = self._find_matching_screen_element(tool_name, screen_elements)
                         if match_el:
-                            self.driver.click_coordinate(match_el["x"], match_el["y"])
-                            result["fallback"] = f"Clicked '{match_el['text']}' at ({match_el['x']}, {match_el['y']})"
+                            self.driver.click(target=match_el.get("text", tool_name), x=match_el.get("x"), y=match_el.get("y"))
+                            result["fallback"] = f"Clicked '{match_el['text']}'"
+
+                elif chosen.startswith("browser_"):
+                    # Standard Playwright Browser Primitives
+                    if chosen == "browser_scroll_down":
+                        self.driver.mousewheel(0, 600)
+                        result = {"status": "scrolled_down", "amount": 600}
+                        params = {"direction": "down", "amount": 600}
+                    elif chosen == "browser_scroll_up":
+                        self.driver.mousewheel(0, -600)
+                        result = {"status": "scrolled_up", "amount": 600}
+                        params = {"direction": "up", "amount": 600}
+                    elif chosen == "browser_take_screenshot":
+                        report_out_dir = os.path.dirname(self.report_file) or self.report_dir
+                        os.makedirs(report_out_dir, exist_ok=True)
+                        sc_path = os.path.join(report_out_dir, f"screenshot_step_{step_num}.png")
+                        saved_path = self.driver.take_screenshot(sc_path)
+                        result = {"screenshot": saved_path}
+                        params = {"path": saved_path}
+                    elif chosen == "browser_reload":
+                        self.driver.reload()
+                        result = {"status": "reloaded"}
+                    elif chosen == "browser_go_back":
+                        self.driver.go_back()
+                        result = {"status": "navigated_back"}
 
                 elif chosen.startswith("input_"):
-                    # Support for web applications without WebMCP (form inputs)
+                    # Support for web applications without WebMCP (form inputs via Playwright fill)
                     field = fallback_params.get("_field") or chosen.replace("input_", "")
-                    input_type = fallback_params.get("_input_type", "text")
                     coords = fallback_params.get("_coords")
-                    
                     target_x, target_y = None, None
                     if coords and len(coords) >= 2 and coords[0] is not None and coords[1] is not None:
                         try:
                             target_x, target_y = float(coords[0]), float(coords[1])
                         except (ValueError, TypeError):
-                            target_x, target_y = None, None
-
-                    if target_x is None or target_y is None:
-                        match_el = next((e for e in screen_elements if field.lower() in e.get("text", "").lower() or field.lower() in e.get("name", "").lower()), None)
-                        if match_el and match_el.get("x") is not None and match_el.get("y") is not None:
-                            target_x, target_y = float(match_el["x"]), float(match_el["y"])
+                            pass
 
                     # Resolve input value from slots or active subtask
                     val = None
@@ -253,20 +344,21 @@ class LayaAgent:
                         if match_q:
                             val = match_q.group(1)
 
-                    if val is not None and target_x is not None and target_y is not None:
+                    if val is not None:
                         is_search = "search" in clean_f or "search" in active_subtask.lower()
-                        self.driver.fill_input_at(target_x, target_y, str(val), press_enter=is_search)
-                        result = {"filled_input": field, "value": "••••••••" if "pass" in clean_f else str(val)}
-                        params = {"field": field, "x": target_x, "y": target_y}
+                        success = self.driver.fill(target=field, value=str(val), x=target_x, y=target_y, press_enter=is_search)
+                        result = {"filled_input": field, "value": "••••••••" if "pass" in clean_f else str(val), "success": success}
+                        params = {"field": field, "value": "••••••••" if "pass" in clean_f else str(val)}
                     else:
-                        result = {"input_error": f"Could not resolve value or coordinate for input '{field}'"}
+                        result = {"input_error": f"Could not resolve value for input '{field}'"}
 
                 elif chosen.startswith("click_"):
+                    # Playwright native locator click: auto-scrolls into view and clicks
                     label = chosen.replace("click_", "")
                     clean_label = label.replace("_", " ").lower().strip()
                     tok_match = re.search(r"\b([a-f0-9]{6,36})\b", clean_label)
                     tok = tok_match.group(1) if tok_match else ""
-                    if not tok and self.extracted_slots:
+                    if not tok and any(w in clean_label for w in ("cancel", "approve", "reject", "delete")) and self.extracted_slots:
                         tok = str(self.extracted_slots.get("orderId") or self.extracted_slots.get("order_id") or self.extracted_slots.get("id") or "")
 
                     coords = fallback_params.get("_coords") if fallback_params else None
@@ -275,31 +367,31 @@ class LayaAgent:
                         try:
                             target_x, target_y = float(coords[0]), float(coords[1])
                         except (ValueError, TypeError):
-                            target_x, target_y = None, None
+                            pass
 
+                    # Also lookup coordinate from screen_elements if not present in fallback_params
                     if target_x is None or target_y is None:
-                        match_el = next((e for e in screen_elements if clean_label in e.get("text", "").lower()), None)
-                        if not match_el and tok:
-                            match_el = next((e for e in screen_elements if tok in e.get("text", "").lower()), None)
-                        if not match_el:
-                            match_el = next((e for e in screen_elements if e.get("text", "").lower() in clean_label), None)
-
+                        match_el = next((e for e in screen_elements if clean_label in e.get("text", "").lower() or (tok and tok in e.get("text", "").lower())), None)
                         if match_el and match_el.get("x") is not None and match_el.get("y") is not None:
                             target_x, target_y = float(match_el["x"]), float(match_el["y"])
-                        elif tok:
-                            scrolled = self.driver.scroll_into_view_and_click(tok)
-                            if scrolled:
-                                target_x, target_y = float(scrolled[0]), float(scrolled[1])
 
-                        if target_x is None or target_y is None:
-                            if screen_elements and screen_elements[0].get("x") is not None:
-                                target_x, target_y = float(screen_elements[0]["x"]), float(screen_elements[0]["y"])
-                            else:
-                                target_x, target_y = 500.0, 300.0
+                    target_name = clean_label
+                    if tok and tok not in target_name:
+                        target_name = f"{clean_label} {tok}"
+                    success = self.driver.click(target=target_name, x=target_x, y=target_y)
+                    result = {"clicked": target_name, "success": success}
+                    params = {"target": target_name, "x": target_x, "y": target_y}
 
-                    self.driver.click_coordinate(target_x, target_y, query=tok)
-                    result = {"clicked_coordinate": (target_x, target_y)}
-                    params = {"x": target_x, "y": target_y}
+                elif chosen == "other":
+                    # Target element was not in view. If page allows scrolling, perform exploratory mousewheel
+                    if scroll_state.get("can_scroll_down") and consecutive_scrolls < 3:
+                        self.driver.mousewheel(0, 600)
+                        consecutive_scrolls += 1
+                        chosen = "browser_scroll_down"
+                        result = {"status": "exploratory_scroll_down", "attempt": consecutive_scrolls}
+                        params = {"direction": "down", "amount": 600}
+                        if self.engine:
+                            self.engine.invalidate_cache(current_url)
 
                 self.last_result = result
                 self.history.append(f"{chosen}({json.dumps(params)})")
@@ -310,9 +402,9 @@ class LayaAgent:
                     if self.engine:
                         self.engine.invalidate_cache(current_url)
 
-                # Route settling after actuation
-                time.sleep(0.5)
-                self.driver.wait_for_settled(timeout_ms=2000)
+                # Fast dynamic settling after actuation
+                time.sleep(0.1)
+                self.driver.wait_for_settled(timeout_ms=1000)
                 new_url = self.driver.get_active_url()
 
                 # Check if login subtask actually succeeded (navigated away from /login)
@@ -369,10 +461,19 @@ class LayaAgent:
                         "logout", "signout", "log out", "sign out",
                     )
                     is_operational_subtask = not is_pure_nav_subtask and any(w in active_subtask.lower() for w in operational_keywords)
-
                     is_batch_subtask = any(w in active_subtask.lower().split() for w in ("all", "every", "each"))
 
-                    if is_login_action and not subtask_is_login:
+                    is_primitive_action = chosen.startswith("browser_")
+                    subtask_mentions_primitive = any(
+                        w in active_subtask.lower()
+                        for w in ("screenshot", "snapshot", "scroll", "reload", "refresh", "go back", "back")
+                    )
+
+                    if is_primitive_action and is_operational_subtask and not subtask_mentions_primitive:
+                        # Exploratory viewport scroll/refresh to locate an off-screen element
+                        # must NOT advance the operational subtask!
+                        pass
+                    elif is_login_action and not subtask_is_login:
                         # Retain active operational subtask for post-login execution
                         pass
                     elif is_nav_step and is_operational_subtask:
@@ -397,8 +498,10 @@ class LayaAgent:
                             pass
                         else:
                             self.current_subtask_idx += 1
+                            consecutive_scrolls = 0
                     else:
                         self.current_subtask_idx += 1
+                        consecutive_scrolls = 0
 
                 duration = (time.time() - step_start) * 1000
                 event = AgentStepEvent(
@@ -562,6 +665,18 @@ class LayaAgent:
                 lines.append(f"| `{r_key}` | {sample or 'None'} |")
             lines.append("")
 
+        # Embedded intermediate screenshots if taken during workflow
+        step_screenshots = [
+            (s.step, s.tool_params["path"]) for s in self.steps_taken
+            if s.chosen_action == "browser_take_screenshot" and s.tool_params.get("path") and os.path.exists(s.tool_params["path"])
+        ]
+        if step_screenshots:
+            lines.append("## 📷 Workflow Screenshots Captured")
+            for step_idx, sc_p in step_screenshots:
+                lines.append(f"### Step {step_idx} Screenshot")
+                lines.append(f"![Step {step_idx}]({os.path.basename(sc_p)})")
+                lines.append("")
+
         if final_screenshot and os.path.exists(final_screenshot):
             rel_screenshot = os.path.basename(final_screenshot)
             lines.append("## 📸 Final Visual Verification Proof")
@@ -690,6 +805,8 @@ class LayaAgent:
             return None
 
         is_id_field = "id" in prop_name.lower() or "id" in prop_desc
+        is_product_field = any(w in prop_name.lower() or w in prop_desc for w in ("product", "sku", "item"))
+        is_order_field = any(w in prop_name.lower() or w in prop_desc for w in ("order", "orderid"))
 
         if isinstance(context, list) and context:
             # Check for item matching searched SKU or name
@@ -715,19 +832,34 @@ class LayaAgent:
 
         elif isinstance(context, dict):
             # Check nested lists (e.g. {"items": [...]}, {"products": [...]})
-            for v in context.values():
+            for k, v in context.items():
+                if is_product_field and "order" in k.lower():
+                    continue
+                if is_order_field and any(w in k.lower() for w in ("product", "item")):
+                    continue
                 if isinstance(v, list) and v:
                     nested_res = self._find_contextual_entity(prop_name, prop_desc, v)
                     if nested_res is not None:
                         return nested_res
 
             if is_id_field and "id" in context:
-                return context["id"]
+                # Do not bind order ID as productId or product ID as orderId
+                is_order_ctx = any(k in context for k in ("orderNumber", "totalAmount", "order")) or "order" in str(context.get("status", "")).lower()
+                if not (is_product_field and is_order_ctx):
+                    return context["id"]
+
             if is_id_field and "product" in context and isinstance(context["product"], dict) and "id" in context["product"]:
-                return context["product"]["id"]
+                if not is_order_field:
+                    return context["product"]["id"]
+
             if prop_name in context:
                 return context[prop_name]
-            for val in context.values():
+
+            for k, val in context.items():
+                if is_product_field and "order" in k.lower():
+                    continue
+                if is_order_field and any(w in k.lower() for w in ("product", "item")):
+                    continue
                 if isinstance(val, dict):
                     if is_id_field and "id" in val:
                         return val["id"]

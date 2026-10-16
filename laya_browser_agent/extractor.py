@@ -43,7 +43,7 @@ class SlotExtractor:
             "Analyze this human user request and return a clean, organized, structured execution plan in JSON:\n"
             "1. 'intent': concise 1-sentence normalized objective summary.\n"
             "2. 'slots': dictionary of extracted parameters (separate 'username', 'password', 'quantity' as int, 'search' or 'query', etc.)\n"
-            "3. 'subtasks': ordered list of concise sequential action steps to achieve the goal. Do NOT include opening or navigating to the initial URL (the browser is already open at that page). If login credentials are provided in the task, include 'Log in with credentials' as the very first step before performing actions. Keep subtasks strictly faithful to the user's explicit action verbs without fabricating extraneous steps (e.g. if the request says 'buy 1 unit', write 'Buy 1 unit', do NOT split into 'select product' and 'proceed to checkout').\n"
+            "3. 'subtasks': ordered list of concise sequential action steps to achieve the goal. Do NOT include opening or navigating to the initial URL (the browser is already open at that page). If login credentials are provided in the task, include 'Log in with credentials' as the very first step before performing actions. Keep subtasks strictly faithful to discrete goals without fabricating artificial sub-steps: do NOT split selecting/picking a product and buying/ordering it into two steps (combine into 'Place order for product'); separate taking a screenshot or logging out into their own individual steps.\n"
             f"{url_context}\n"
             f"User request: {task}\n\n"
             "Respond in valid JSON only:\n"
@@ -118,6 +118,23 @@ class SlotExtractor:
                             str(s).strip() for s in subtasks
                             if str(s).strip() and not any(w in str(s).lower() for w in ("initial url", "start url", "navigate to initial", "visit initial", "open initial"))
                         ]
+                        # Merge "select/choose product" + "order/buy product" pairs into single action
+                        merged = []
+                        skip = False
+                        for i in range(len(clean_subtasks)):
+                            if skip:
+                                skip = False
+                                continue
+                            st_cur = clean_subtasks[i].lower()
+                            if i + 1 < len(clean_subtasks):
+                                st_nxt = clean_subtasks[i + 1].lower()
+                                if any(w in st_cur for w in ("select", "choose", "pick", "find")) and any(w in st_nxt for w in ("order", "buy", "purchase", "checkout")):
+                                    merged.append(clean_subtasks[i + 1])
+                                    skip = True
+                                    continue
+                            merged.append(clean_subtasks[i])
+                        clean_subtasks = merged or clean_subtasks
+
                         if not clean_subtasks:
                             clean_subtasks = [task]
                         return StructuredPlan(

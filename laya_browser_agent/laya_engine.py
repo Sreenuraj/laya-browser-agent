@@ -20,6 +20,8 @@ def extract_page_candidates(
     screen_elements: List[Dict[str, Any]],
     current_url: str,
     excluded_actions: Optional[Set[str]] = None,
+    scroll_state: Optional[Dict[str, Any]] = None,
+    can_go_back: bool = False,
 ) -> Dict[str, Dict[str, Any]]:
     """
     Extracts all interactive affordances on the current page into a candidate map.
@@ -116,6 +118,36 @@ def extract_page_candidates(
             "path": href,
         }
 
+    # 4. Universal Browser Primitives (Always available affordances)
+    can_down = bool(scroll_state.get("can_scroll_down", True)) if scroll_state is not None else True
+    can_up = bool(scroll_state.get("can_scroll_up", False)) if scroll_state is not None else False
+
+    if can_down and "browser_scroll_down" not in excluded:
+        candidates["browser_scroll_down"] = {
+            "type": "primitive",
+            "label": "Scroll down to reveal elements below the fold",
+        }
+    if can_up and "browser_scroll_up" not in excluded:
+        candidates["browser_scroll_up"] = {
+            "type": "primitive",
+            "label": "Scroll up to reveal elements above the fold",
+        }
+    if "browser_take_screenshot" not in excluded:
+        candidates["browser_take_screenshot"] = {
+            "type": "primitive",
+            "label": "Capture screenshot of current screen state",
+        }
+    if "browser_reload" not in excluded:
+        candidates["browser_reload"] = {
+            "type": "primitive",
+            "label": "Reload or refresh current page",
+        }
+    if can_go_back and "browser_go_back" not in excluded:
+        candidates["browser_go_back"] = {
+            "type": "primitive",
+            "label": "Navigate back to previous page",
+        }
+
     return candidates
 
 
@@ -130,7 +162,7 @@ class LayaEngine:
         self,
         model_id: str = "aac6fef/laya-mlx",
         device: str = "gpu",
-        confidence_threshold: float = 0.85,
+        confidence_threshold: float = 0.75,
         ollama_url: str = "http://localhost:11434",
         ollama_model: str = "llama3.1:8b",
     ):
@@ -164,6 +196,8 @@ class LayaEngine:
         extracted_slots: Optional[Dict[str, Any]] = None,
         excluded_actions: Optional[List[str]] = None,
         force_refresh: bool = False,
+        scroll_state: Optional[Dict[str, Any]] = None,
+        can_go_back: bool = False,
     ) -> Tuple[str, float, Dict[str, Any], str]:
         """
         Evaluates current screen affordances to decide the next action in a single forward pass.
@@ -178,6 +212,8 @@ class LayaEngine:
             screen_elements=screen_elements,
             current_url=current_url,
             excluded_actions=excluded_set,
+            scroll_state=scroll_state,
+            can_go_back=can_go_back,
         )
         self.site_cache[route_key] = candidates
 
@@ -199,6 +235,7 @@ class LayaEngine:
         other_nav_cands: Dict[str, str] = {}
         matched_btn_cands: Dict[str, str] = {}
         other_btn_cands: Dict[str, str] = {}
+        prim_cands: Dict[str, str] = {}
 
         for k, cand in candidates.items():
             if k in excluded_set:
@@ -209,6 +246,8 @@ class LayaEngine:
 
             if ctype == "tool":
                 tool_cands[k] = lbl
+            elif ctype == "primitive":
+                prim_cands[k] = lbl
             elif ctype == "navigate":
                 if any(w in full_txt for w in sub_words if len(w) > 3):
                     matched_nav_cands[k] = lbl
@@ -224,31 +263,64 @@ class LayaEngine:
 
         # Assemble up to 10-12 focused choices for Laya
         criteria: Dict[str, str] = {}
-        # 1. Matched navigation links (e.g. Products tab when searching for products)
+
+        # 1. Operational tools matching subtask verbs (highest priority in WebMCP applications)
+        matched_tools = {k: v for k, v in tool_cands.items() if any(w in k.lower() or w in v.lower() for w in sub_words if len(w) > 3)}
+        other_tools = {k: v for k, v in tool_cands.items() if k not in matched_tools}
+
+        sorted_matched_tools = sorted(
+            matched_tools.items(),
+            key=lambda item: sum(1 for w in sub_words if len(w) > 3 and (w in item[0].lower() or w in item[1].lower())),
+            reverse=True,
+        )
+        for k, v in sorted_matched_tools:
+            if k != "tool_navigate_to_page" and len(criteria) < 8:
+                criteria[k] = v
+
+        # 2. Matched navigation links (e.g. Products tab when searching for products)
         for k, v in list(matched_nav_cands.items())[:3]:
-            criteria[k] = v
+            if len(criteria) < 8:
+                criteria[k] = v
 
-        # 2. Matched buttons (up to 4)
+        # 3. Matched buttons (up to 4)
         for k, v in list(matched_btn_cands.items())[:4]:
-            criteria[k] = v
+            if len(criteria) < 8:
+                criteria[k] = v
 
-        # 3. Operational tools (prioritize action tools over generic navigate)
-        for k, v in list(tool_cands.items()):
+        # 3. Explicit primitive match (screenshot, scroll, reload)
+        for pk, pv in prim_cands.items():
+            if any(w in subtask.lower() for w in ("screenshot", "snapshot", "capture")) and "screenshot" in pk:
+                criteria[pk] = pv
+            elif any(w in subtask.lower() for w in ("scroll down", "bottom", "below")) and "scroll_down" in pk:
+                criteria[pk] = pv
+            elif any(w in subtask.lower() for w in ("scroll up", "top", "above")) and "scroll_up" in pk:
+                criteria[pk] = pv
+            elif any(w in subtask.lower() for w in ("reload", "refresh")) and "reload" in pk:
+                criteria[pk] = pv
+            elif any(w in subtask.lower() for w in ("go back", "back")) and "go_back" in pk:
+                criteria[pk] = pv
+
+        # 4. If looking for a specific target token/verb and no matched button exists, expose scroll down
+        if not matched_btn_cands and not matched_nav_cands and "browser_scroll_down" in prim_cands:
+            criteria["browser_scroll_down"] = prim_cands["browser_scroll_down"]
+
+        # 5. Other operational tools if space permits
+        for k, v in list(other_tools.items()):
             if k != "tool_navigate_to_page" and len(criteria) < 8:
                 criteria[k] = v
         if "tool_navigate_to_page" in tool_cands and len(criteria) < 8:
             criteria["tool_navigate_to_page"] = tool_cands["tool_navigate_to_page"]
 
-        # 4. Other navigation links
+        # 6. Other navigation links
         for k, v in list(other_nav_cands.items())[:max(0, 9 - len(criteria))]:
             criteria[k] = v
 
-        # 5. Other buttons if space permits
+        # 7. Other buttons if space permits
         remaining_slots = max(0, 10 - len(criteria))
         for k, v in list(other_btn_cands.items())[:remaining_slots]:
             criteria[k] = v
 
-        # 5. Mandatory negative option (Prevents forced softmax probability spills onto irrelevant buttons)
+        # 8. Mandatory negative option (Prevents forced softmax probability spills onto irrelevant buttons)
         criteria["other"] = "None of the other options fits the active step or the required element is not on this screen"
 
         # Format clean, unpolluted state: focuses on active subtask and screen context
@@ -296,25 +368,29 @@ class LayaEngine:
 
         # Fallback handling: if confidence is low, negative option chosen, or guardrail violated:
         if chosen == "other" or confidence < self.confidence_threshold or violates_guardrail or chosen not in candidates:
+            filtered_tools = [t for t in available_tools if t.get("name") not in excluded_set and f"tool_{t.get('name')}" not in excluded_set]
             fallback = self._query_screen_locator(
                 subtask=subtask,
                 current_url=current_url,
-                available_tools=available_tools,
+                available_tools=filtered_tools,
                 screen_elements=screen_elements,
                 last_result=last_result,
                 extracted_slots=extracted_slots,
+                scroll_state=scroll_state,
+                can_go_back=can_go_back,
             )
             if fallback:
                 fb_action, fb_conf, fb_params, fb_info = fallback
-                fb_is_logout = fb_action == "tool_logout_user" or "logout" in fb_action.lower()
-                if not (fb_is_logout and not subtask_has_logout):
-                    cand_meta = candidates.get(fb_action, {})
-                    if cand_meta:
-                        if "_coords" not in fb_params and cand_meta.get("coords"):
-                            fb_params["_coords"] = cand_meta["coords"]
-                        if "path" not in fb_params and cand_meta.get("path"):
-                            fb_params["path"] = cand_meta["path"]
-                    return fb_action, fb_conf, fb_params, fb_info
+                if fb_action not in excluded_set:
+                    fb_is_logout = fb_action == "tool_logout_user" or "logout" in fb_action.lower()
+                    if not (fb_is_logout and not subtask_has_logout):
+                        cand_meta = candidates.get(fb_action, {})
+                        if cand_meta:
+                            if "_coords" not in fb_params and cand_meta.get("coords"):
+                                fb_params["_coords"] = cand_meta["coords"]
+                            if "path" not in fb_params and cand_meta.get("path"):
+                                fb_params["path"] = cand_meta["path"]
+                        return fb_action, fb_conf, fb_params, fb_info
 
             # If fallback cannot resolve an action, return safe uncommitted action
             return "other", 0.0, {}, "Uncertain action; awaiting navigation or visual update"
@@ -330,6 +406,8 @@ class LayaEngine:
         screen_elements: List[Dict[str, Any]],
         last_result: Any = None,
         extracted_slots: Optional[Dict[str, Any]] = None,
+        scroll_state: Optional[Dict[str, Any]] = None,
+        can_go_back: bool = False,
     ) -> Optional[Tuple[str, float, Dict[str, Any], str]]:
         """Uses local LLM to inspect visual elements on screen and resolve the exact tool or coordinate to click."""
         screen_summary = [
@@ -343,21 +421,31 @@ class LayaEngine:
         ]
         tool_names = {t.get("name") for t in available_tools}
 
+        can_scroll_down = bool(scroll_state.get("can_scroll_down", True)) if scroll_state is not None else True
+        can_scroll_up = bool(scroll_state.get("can_scroll_up", False)) if scroll_state is not None else False
+
         prompt = (
             f"You are an autonomous browser vision and routing engine.\n"
             f"Objective: {subtask}\n"
             f"Current URL: {current_url}\n"
             f"WebMCP Tools available on page: {json.dumps(tool_info)}\n"
             f"Visible Elements on screen with coordinates (x,y): {json.dumps(screen_summary)}\n"
-            f"Extracted User Inputs: {json.dumps(extracted_slots or {})}\n\n"
-            "Identify the best action to complete this objective:\n"
+            f"Extracted User Inputs: {json.dumps(extracted_slots or {})}\n"
+            f"Browser Affordances: can_scroll_down={can_scroll_down}, can_scroll_up={can_scroll_up}, can_go_back={can_go_back}\n\n"
+            "Identify the best action to achieve or progress toward this objective:\n"
+            "- ALWAYS prefer a WebMCP tool (action='tool_<tool_name>') over clicking screen buttons if a tool matches the goal (e.g. use 'tool_approve_order' for approving orders, 'tool_reject_order' for rejecting orders, 'tool_cancel_order' for cancelling, 'tool_search_products' for search).\n"
             "- If a WebMCP tool achieves it directly on this page, return action='tool_<tool_name>' and params={...}.\n"
-            "- If the current page does not have the target feature, identify which navigation link/tab leads to that section and return action='click_<text>' with coords={'x': x, 'y': y}.\n"
+            "- If the current page does not have the target feature, identify which navigation link/tab leads to that section (e.g. Products tab for product search, My Orders for order history, Order Management for approving/rejecting orders) and return action='click_<text>' with coords={'x': x, 'y': y} or action='tool_<nav_tool>'.\n"
             "- If clicking a visible screen button or input achieves it, return action='click_<text>' with coords={'x': x, 'y': y}.\n"
-            "- NEVER return logout_user or click logout unless the objective explicitly asks to logout.\n\n"
+            "- If the target element, row, button, or content is NOT visible in the screen elements, and the page can scroll down (can_scroll_down=True), return action='browser_scroll_down' so the browser can reveal elements below the fold.\n"
+            "- If the target element might be above the current scroll position (can_scroll_up=True), return action='browser_scroll_up'.\n"
+            "- If the objective asks to take a screenshot, capture screen, or snapshot, return action='browser_take_screenshot'.\n"
+            "- If the objective asks to reload or go back, return action='browser_reload' or action='browser_go_back'.\n"
+            "- NEVER return logout_user or click logout unless the objective explicitly asks to logout.\n"
+            "- ONLY return action='other' if neither the current page, scrolling, nor visible navigation leads toward the objective.\n\n"
             "Respond in JSON format only:\n"
             "{\n"
-            '  "action": "tool_<name>" or "click_<name>",\n'
+            '  "action": "tool_<name>", "click_<name>", "browser_scroll_down", "browser_scroll_up", "browser_take_screenshot", "browser_reload", "browser_go_back", or "other",\n'
             '  "params": { ... },\n'
             '  "coords": {"x": 0, "y": 0},\n'
             '  "reasoning": "<short rationale>"\n'
@@ -379,14 +467,30 @@ class LayaEngine:
                     data = res.json()
                     content = data.get("message", {}).get("content", "{}")
                     parsed = json.loads(content)
-                    action = parsed.get("action", "")
+                    raw_action = parsed.get("action", "").strip()
+                    if not raw_action or raw_action.lower() in ("other", "none", "unknown"):
+                        return None
 
-                    raw_name = action.replace("tool_", "").strip()
-                    clean_name = re.sub(r"[^a-zA-Z0-9_]", "_", action.replace("click_", "").strip()).strip("_").lower()
-                    if raw_name in tool_names:
-                        action = f"tool_{raw_name}"
-                    elif action.startswith("click_") or clean_name:
-                        action = f"click_{clean_name}"
+                    act_low = raw_action.lower().replace("-", "_")
+                    if "scroll" in act_low and "down" in act_low:
+                        action = "browser_scroll_down"
+                    elif "scroll" in act_low and "up" in act_low:
+                        action = "browser_scroll_up"
+                    elif any(w in act_low for w in ("screenshot", "snapshot", "capture")):
+                        action = "browser_take_screenshot"
+                    elif any(w in act_low for w in ("reload", "refresh")):
+                        action = "browser_reload"
+                    elif any(w in act_low for w in ("go_back", "goback", "back")):
+                        action = "browser_go_back"
+                    else:
+                        raw_name = raw_action.replace("tool_", "").strip()
+                        clean_name = re.sub(r"[^a-zA-Z0-9_]", "_", raw_action.replace("click_", "").strip()).strip("_").lower()
+                        if raw_name in tool_names:
+                            action = f"tool_{raw_name}"
+                        elif raw_action.startswith("click_") or clean_name:
+                            action = f"click_{clean_name}"
+                        else:
+                            action = raw_action
 
                     params = parsed.get("params") or {}
                     coords = parsed.get("coords") or {}

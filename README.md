@@ -13,6 +13,8 @@
 
 - **$0.00 Cloud Spend**: Zero tokens sent to OpenAI or Anthropic. All intent planning, route selection, and actuation run locally on your machine.
 - **Sub-15ms Decision Loop**: Powered by **Laya MLX** (`aac6fef/laya-mlx`) running directly on Apple Silicon Metal GPU.
+- **Playwright Native Tool Suite**: Canonical alignment with Playwright CLI / MCP primitives (`click`, `fill`, `mousewheel`, `find`, `screenshot`, `go-back`, `reload`). Auto-scrolls elements into view anywhere in the DOM before clicking.
+- **Autonomous Viewport Exploration**: Dynamically detects whether applications allow scrolling (`get_scroll_state`), scrolling up and down to reveal elements below the fold without dropping or skipping operational goals.
 - **Universal Web Automation**: Native support for **WebMCP** (`navigator.modelContext`, `document.modelContext`, `<form toolname="...">`) and standard visual DOM web apps (inputs, deep table row scanning, coordinate clicks).
 - **Zero Hardcoded Intents**: Open-ended natural language goals (e.g. *"compare 2 products"*, *"see if available"*, *"export report"*) are dynamically decomposed by local **Ollama** (`llama3.1:8b`) without maintaining rigid intent tables.
 - **Live Affordance Perception**: Dynamic in-memory discovery of tools, navigation links, and screen buttons in <3ms via Chrome DevTools Protocol, eliminating stale disk caches.

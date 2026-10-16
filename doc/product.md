@@ -85,3 +85,7 @@ If you would like to run experiments or test custom agent scenarios locally, clo
 ### 🖥 Flexible Headed & Headless Execution
 - **Headed Mode (`--headed`)**: Watch Chromium actuate the browser live on screen. Perfect for development and demonstrations.
 - **Headless Mode (`--headless`)**: Runs quietly in the background for CI/CD pipelines, automated testing, and background workers.
+
+### 🎭 Canonical Playwright Native Tools & Autonomous Exploration
+- **Standard Tool Suite**: Uses Playwright's canonical interaction primitives (`click`, `fill`, `mousewheel`, `find`, `screenshot`, `reload`, `go-back`) ensuring reliable actionability auto-scrolling into view.
+- **Autonomous Viewport Perception**: Dynamically senses scroll boundaries (`can_scroll_down`, `can_scroll_up`) and performs bounded exploration when items lie below the fold without dropping or prematurely skipping operational subtasks.

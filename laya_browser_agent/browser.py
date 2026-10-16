@@ -1,5 +1,7 @@
-"""Playwright WebMCP Browser Driver."""
-
+import json
+import os
+import re
+import time
 from typing import Any, Dict, List, Optional, Tuple
 from playwright.sync_api import sync_playwright, Browser, BrowserContext, Page
 
@@ -266,106 +268,215 @@ class PlaywrightWebMcpDriver:
         except Exception:
             return []
 
-    def scroll_into_view_and_click(self, query: str) -> Optional[Tuple[int, int]]:
-        """Finds any button or interactive element associated with query text across the document, scrolls into view and clicks."""
-        js_code = r"""
-        (query) => {
-            const clean = String(query).toLowerCase().trim();
-            if (!clean) return null;
-            // 1. Direct button text match
-            const buttons = Array.from(document.querySelectorAll('button, a, [role="button"]'));
-            for (const b of buttons) {
-                if ((b.innerText || '').toLowerCase().includes(clean)) {
-                    b.scrollIntoView({ behavior: 'instant', block: 'center' });
-                    b.click();
-                    const rect = b.getBoundingClientRect();
-                    return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
-                }
-            }
-            // 2. Row text match
-            const rows = Array.from(document.querySelectorAll('tbody tr, tr, [data-row], [role="row"], li.item, .card'));
-            for (const r of rows) {
-                const text = (r.innerText || '').toLowerCase();
-                if (text.includes(clean)) {
-                    const btn = r.querySelector('button') || r.querySelector('a');
-                    if (btn) {
-                        btn.scrollIntoView({ behavior: 'instant', block: 'center' });
-                        btn.click();
-                        const rect = btn.getBoundingClientRect();
-                        return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
-                    }
-                }
-            }
-            return null;
-        }
+    def click(self, target: str = "", x: Optional[float] = None, y: Optional[float] = None) -> bool:
         """
-        try:
-            coords = self.page.evaluate(js_code, query)
-            if coords and coords.get("x") is not None and coords.get("y") is not None:
-                return (int(coords["x"]), int(coords["y"]))
-        except Exception:
-            pass
-        return None
+        Playwright native click: locates target anywhere in document, auto-scrolls into view,
+        verifies actionability, and clicks. Falls back to screen coordinates if target lookup fails.
+        """
+        clean_target = (target or "").strip()
+        if clean_target:
+            # 1. Try Playwright text/button locator with built-in auto-scroll
+            for loc_str in (
+                f"button:has-text({json.dumps(clean_target)})",
+                f"a:has-text({json.dumps(clean_target)})",
+                f"[role='button']:has-text({json.dumps(clean_target)})",
+            ):
+                try:
+                    locator = self.page.locator(loc_str).first
+                    if locator.count() > 0:
+                        locator.scroll_into_view_if_needed(timeout=1000)
+                        locator.click(timeout=1500)
+                        return True
+                except Exception:
+                    continue
 
-    def click_coordinate(self, x: Any, y: Any, query: Optional[str] = None):
-        """Clicks directly at screen coordinates (x, y), auto-scrolling if needed, with query fallback."""
-        if query:
-            res = self.scroll_into_view_and_click(query)
-            if res:
-                return
-
-        if x is None or y is None:
-            return
-        try:
-            fx, fy = float(x), float(y)
-            self.page.evaluate(
-                """([x, y]) => {
-                    let el = document.elementFromPoint(x, y);
-                    if (el && el.tagName !== 'BODY' && el.tagName !== 'HTML') {
-                        el.click();
-                        return;
-                    }
-                    if (y > window.innerHeight || y < 0) {
-                        window.scrollTo({ top: Math.max(0, window.pageYOffset + y - window.innerHeight / 2), behavior: 'instant' });
-                    }
-                    const clientY = Math.max(10, Math.min(window.innerHeight - 10, y - window.pageYOffset));
-                    el = document.elementFromPoint(x, clientY);
-                    if (el && el.tagName !== 'BODY' && el.tagName !== 'HTML') {
-                        el.click();
-                    }
-                }""",
-                [fx, fy],
-            )
-            viewport = self.page.viewport_size or {"height": 800}
-            target_y = min(fy, float(viewport.get("height", 800)) - 10) if fy > 0 else 10.0
-            self.page.mouse.click(fx, target_y)
-        except Exception:
+            # 2. Try row-associated action button (e.g. Cancel button in table row with ID)
+            tok_match = re.search(r"\b([a-f0-9]{6,36})\b", clean_target.lower())
+            tok = tok_match.group(1) if tok_match else ""
+            search_key = tok or clean_target
             try:
-                self.page.mouse.click(float(x), float(y))
+                row_loc = self.page.locator(f"tr:has-text({json.dumps(search_key)}), [data-row]:has-text({json.dumps(search_key)}), li:has-text({json.dumps(search_key)})").first
+                if row_loc.count() > 0:
+                    btn = None
+                    if any(w in clean_target.lower() for w in ("cancel", "reject", "delete")):
+                        btn_cand = row_loc.locator("button:has(svg.lucide-x), button:has(svg.lucide-trash), button:has-text('Cancel'), button:has-text('Reject')").first
+                        if btn_cand.count() > 0:
+                            btn = btn_cand
+                    elif any(w in clean_target.lower() for w in ("approve", "check")):
+                        btn_cand = row_loc.locator("button:has(svg.lucide-check), button:has-text('Approve')").first
+                        if btn_cand.count() > 0:
+                            btn = btn_cand
+
+                    if not btn:
+                        btn = row_loc.locator("button, a").first
+
+                    if btn and btn.count() > 0:
+                        btn.scroll_into_view_if_needed(timeout=1000)
+                        btn.click(timeout=1500)
+                        # Check for immediate confirmation dialog (e.g. Alert Dialog confirming Approve/Reject/Delete)
+                        try:
+                            dialog = self.page.locator('[role="alertdialog"], [role="dialog"]').first
+                            if dialog.count() > 0 and dialog.is_visible():
+                                action_btn = None
+                                if any(w in clean_target.lower() for w in ("approve", "check")):
+                                    action_btn = dialog.locator('button:has-text("Approve"), button:has-text("Confirm"), button:has-text("Yes")').first
+                                elif any(w in clean_target.lower() for w in ("reject", "cancel", "delete")):
+                                    action_btn = dialog.locator('button:has-text("Reject"), button:has-text("Delete"), button:has-text("Confirm")').first
+                                if action_btn and action_btn.count() > 0:
+                                    action_btn.click(timeout=1000)
+                        except Exception:
+                            pass
+                        return True
             except Exception:
                 pass
 
-    def fill_input_at(self, x: Any, y: Any, value: str, press_enter: bool = False):
-        """Clicks at input coordinates and fills the value, optionally pressing Enter."""
-        if x is None or y is None:
-            return
+        # 3. Fallback to coordinate click if target text wasn't found or coordinates supplied
+        if x is not None and y is not None:
+            try:
+                fx, fy = float(x), float(y)
+                viewport = self.page.viewport_size or {"height": 800}
+                if fy > float(viewport.get("height", 800)) or fy < 0:
+                    self.page.mouse.wheel(0, fy - 300)
+                    self.page.wait_for_timeout(100)
+                self.page.mouse.click(fx, min(fy, float(viewport.get("height", 800)) - 10))
+                return True
+            except Exception:
+                pass
+
+        # 4. Last resort: generic element text match
+        if clean_target:
+            try:
+                loc = self.page.get_by_text(clean_target, exact=False).first
+                if loc.count() > 0:
+                    loc.scroll_into_view_if_needed(timeout=1000)
+                    loc.click(timeout=1500)
+                    return True
+            except Exception:
+                pass
+
+        return False
+
+    def fill(self, target: str = "", value: Any = "", x: Optional[float] = None, y: Optional[float] = None, press_enter: bool = False) -> bool:
+        """
+        Playwright native fill: locates input/form field by placeholder, label, name, or id,
+        auto-scrolls into view, clears, and fills value.
+        """
+        val_str = str(value) if value is not None else ""
+        clean_target = (target or "").strip()
+        if clean_target:
+            # Try Playwright locators for inputs
+            for loc_str in (
+                f"input[name={json.dumps(clean_target)}]",
+                f"input#{clean_target}",
+                f"input[placeholder*={json.dumps(clean_target)} i]",
+                f"textarea[name={json.dumps(clean_target)}]",
+                f"textarea#{clean_target}",
+                f"input[aria-label*={json.dumps(clean_target)} i]",
+            ):
+                try:
+                    locator = self.page.locator(loc_str).first
+                    if locator.count() > 0:
+                        locator.scroll_into_view_if_needed(timeout=1000)
+                        locator.fill(val_str, timeout=1500)
+                        if press_enter:
+                            locator.press("Enter")
+                        return True
+                except Exception:
+                    continue
+
+        # Fallback to coordinates
+        if x is not None and y is not None:
+            try:
+                fx, fy = float(x), float(y)
+                self.page.mouse.click(fx, fy)
+                self.page.keyboard.press("Meta+A")
+                self.page.keyboard.press("Backspace")
+                self.page.keyboard.type(val_str)
+                if press_enter:
+                    self.page.keyboard.press("Enter")
+                return True
+            except Exception:
+                pass
+
+        return False
+
+    def mousewheel(self, dx: int = 0, dy: int = 500) -> bool:
+        """Playwright native mousewheel scrolling."""
         try:
-            fx, fy = float(x), float(y)
-            self.page.mouse.click(fx, fy)
-            self.page.keyboard.press("Meta+A")
-            self.page.keyboard.press("Backspace")
-            self.page.keyboard.type(str(value))
-            if press_enter:
-                self.page.keyboard.press("Enter")
+            self.page.mouse.wheel(dx, dy)
+            self.page.wait_for_timeout(100)
+            return True
+        except Exception:
+            return False
+
+    def find(self, query: str) -> bool:
+        """Playwright native element finder: checks if query text exists anywhere in the DOM."""
+        try:
+            return self.page.locator(f"text={query}").count() > 0
+        except Exception:
+            return False
+
+    def wait_for_settled(self, timeout_ms: int = 2000):
+        """Waits for network and URL to settle after an action."""
+        try:
+            self.page.wait_for_load_state("domcontentloaded", timeout=timeout_ms)
+            self.page.wait_for_load_state("networkidle", timeout=min(300, timeout_ms))
         except Exception:
             pass
 
-    def wait_for_settled(self, timeout_ms: int = 5000):
-        """Waits for network and URL to settle after an action."""
+    def take_screenshot(self, filepath: Optional[str] = None) -> str:
+        """Captures a screenshot of the current page and returns saved file path."""
+        if not filepath:
+            os.makedirs("reports", exist_ok=True)
+            filepath = os.path.join("reports", f"screenshot_{int(time.time() * 1000)}.png")
+        os.makedirs(os.path.dirname(os.path.abspath(filepath)), exist_ok=True)
+        self.page.screenshot(path=filepath)
+        return filepath
+
+    def get_scroll_state(self) -> Dict[str, Any]:
+        """Inspects whether the window or any container can scroll down or up."""
+        js_code = r"""
+        () => {
+            const doc = document.documentElement;
+            const body = document.body;
+            const scrollTop = window.scrollY || doc.scrollTop || body.scrollTop || 0;
+            const scrollHeight = Math.max(doc.scrollHeight, body.scrollHeight, doc.clientHeight);
+            const clientHeight = window.innerHeight || doc.clientHeight;
+            const winCanDown = (scrollTop + clientHeight) < (scrollHeight - 15);
+            const winCanUp = scrollTop > 15;
+
+            let containerCanDown = false;
+            let containerCanUp = false;
+            const scrollables = Array.from(document.querySelectorAll('div, main, section, ul, table')).filter(el => {
+                const style = window.getComputedStyle(el);
+                return (style.overflowY === 'auto' || style.overflowY === 'scroll') && el.scrollHeight > el.clientHeight + 10;
+            });
+            for (const el of scrollables) {
+                if ((el.scrollTop + el.clientHeight) < (el.scrollHeight - 10)) containerCanDown = true;
+                if (el.scrollTop > 10) containerCanUp = true;
+            }
+
+            return {
+                "can_scroll_down": Boolean(winCanDown || containerCanDown),
+                "can_scroll_up": Boolean(winCanUp || containerCanUp),
+                "scroll_top": Math.round(scrollTop),
+                "scroll_height": Math.round(scrollHeight),
+                "client_height": Math.round(clientHeight)
+            };
+        }
+        """
         try:
-            self.page.wait_for_load_state("networkidle", timeout=timeout_ms)
+            return self.page.evaluate(js_code) or {"can_scroll_down": False, "can_scroll_up": False}
         except Exception:
-            pass
+            return {"can_scroll_down": False, "can_scroll_up": False}
+
+    def go_back(self):
+        """Navigates back in browser history."""
+        self.page.go_back(wait_until="domcontentloaded")
+
+    def reload(self):
+        """Reloads current page."""
+        self.page.reload(wait_until="domcontentloaded")
 
     def close(self):
         """Closes browser session."""
