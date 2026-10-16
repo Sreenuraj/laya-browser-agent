@@ -9,7 +9,11 @@ class LayaEngine:
 
     def __init__(self, model_id: str = "aac6fef/laya-mlx", device: str = "gpu"):
         self.model_id = model_id
-        self.agent = Agent(model_id, device=device)
+        try:
+            self.agent = Agent(model_id, device=device)
+        except Exception:
+            # ponytail: fallback to CPU if Metal GPU is unavailable
+            self.agent = Agent(model_id, device="cpu")
 
     def decide_next_action(
         self,

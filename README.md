@@ -14,15 +14,25 @@ This inspects your machine, configures the Python virtual environment, caches th
 ```bash
 ./run.sh
 ```
-Or with direct flags:
+In interactive mode, you will be prompted for your target URL, task, and browser mode (Headed or Headless).
+
+#### Direct Flag Examples:
+
+**Headed Mode (Visible browser window):**
 ```bash
-./run.sh --url "http://localhost:3000/login" --task "Login as user (user/User@123), search products, buy 1 unit, and logout" --headed
+./run.sh --url "https://my-app.com" --task "Filter items by status active" --headed
+```
+
+**Headless Mode (Background execution):**
+```bash
+./run.sh --url "https://my-app.com" --task "Export daily report" --headless
 ```
 
 ## Features
 - **$0.00 Cost**: Zero cloud API calls, zero credit card required.
+- **Universal Application Support**: Works with any web app exposing WebMCP tools (`navigator.modelContext`, `document.modelContext`) or declarative forms (`<form toolname="...">`).
+- **Headed & Headless Modes**: Watch the agent execute visually in real time or run silently in the background.
 - **Sub-20ms Decision Latency**: Powered by Laya typed decision policy on Apple Silicon MLX GPU.
-- **WebMCP Native**: Direct programmatic tool calling on web pages (`page.webmcp.callTool`).
-- **Interactive Terminal UI**: Inspired by modern developer terminal tools with live decision telemetry.
+- **Interactive Terminal UI**: Rich developer UX with live decision telemetry and execution receipts.
 
 See [`doc/plan.md`](doc/plan.md) for the complete engineering architecture and design details.
