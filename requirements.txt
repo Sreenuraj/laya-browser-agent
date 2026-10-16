@@ -1,0 +1,6 @@
+laya-mlx>=0.2.0
+mlx>=0.32.0
+playwright>=1.52.0
+rich>=13.9.0
+httpx>=0.28.0
+pydantic>=2.10.0
