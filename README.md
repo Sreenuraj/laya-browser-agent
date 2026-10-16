@@ -1,4 +1,4 @@
-# Laya WebMCP Agent ⚡️
+# Laya Browser Agent Agent ⚡️
 
 > Zero-cost, sub-second autonomous web agent running on Apple Silicon Metal GPU via Laya MLX and WebMCP.
 

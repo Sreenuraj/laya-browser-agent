@@ -1,4 +1,4 @@
-# Laya WebMCP Agent: Architecture & Engineering Plan
+# Laya Browser Agent Agent: Architecture & Engineering Plan
 
 > **Zero-Cost, Sub-Second Autonomous Web Agent Powered by Laya MLX Decision Models & WebMCP**
 
@@ -16,7 +16,7 @@ The convergence of two breakthrough technologies:
 1. **WebMCP (Web Model Context Protocol)**: Exposes web applications as clean, structured, typed JSON tool APIs (`navigator.modelContext`, `document.modelContext`, `<form toolname="...">`). The entire state of a webpage drops from 20,000 tokens of messy HTML to **~80 tokens of clean JSON**.
 2. **Laya (MLX)**: A sub-millisecond, typed decision model (`max_len: 512`) designed for choice evaluation and policy routing, running natively on Apple Silicon Metal GPU.
 
-**Laya WebMCP Agent** is a standalone, terminal-driven autonomous browser agent that executes complex web tasks with **$0.00 API cost**, **sub-20ms decision latency**, and **zero cloud dependencies**.
+**Laya Browser Agent Agent** is a standalone, terminal-driven autonomous browser agent that executes complex web tasks with **$0.00 API cost**, **sub-20ms decision latency**, and **zero cloud dependencies**.
 
 ---
 
@@ -60,7 +60,7 @@ The convergence of two breakthrough technologies:
 
 ## 3. Detailed Component Architecture
 
-### Component 1: Terminal CLI & UX (`laya_webmcp/cli.py`)
+### Component 1: Terminal CLI & UX (`laya_browser_agent/cli.py`)
 * Inspired by clean developer CLI tools (e.g. `opencode`, `gh`, `rich`).
 * **Modes**:
   * **Interactive Mode**: Prompts for Target URL and Goal with formatted spinners, progress steps, and live decision feeds.
@@ -71,12 +71,12 @@ The convergence of two breakthrough technologies:
   * Laya confidence score & selected action
   * Structured return values and completion receipts.
 
-### Component 2: Parameter & Slot Extractor (`laya_webmcp/extractor.py`)
+### Component 2: Parameter & Slot Extractor (`laya_browser_agent/extractor.py`)
 Decision models excel at *choosing* between discrete options, but entity parameters (usernames, passwords, search keywords, UUIDs) need to be extracted from the user prompt:
 * **Primary (Local Ollama)**: Queries local `http://localhost:11434/api/chat` with a tiny ~150-token prompt using local `llama3.1:8b` or `qwen2.5:7b` to extract structured JSON parameters.
 * **Fallback (Regex / Heuristic)**: Instant deterministic parser for common patterns (`credentials (user / pass)`, quantities, URLs, IDs) requiring 0 ms and no external process.
 
-### Component 3: Laya MLX Decision Engine (`laya_webmcp/laya_engine.py`)
+### Component 3: Laya MLX Decision Engine (`laya_browser_agent/laya_engine.py`)
 * Wraps `laya_mlx.Agent` pointing to `aac6fef/laya-mlx` (cached locally in Hugging Face cache).
 * **State Formatting**:
   ```python
@@ -100,7 +100,7 @@ Decision models excel at *choosing* between discrete options, but entity paramet
   ```
 * Evaluates action probabilities and picks the top decision in < 15ms.
 
-### Component 4: Playwright WebMCP Actuator (`laya_webmcp/browser.py`)
+### Component 4: Playwright WebMCP Actuator (`laya_browser_agent/browser.py`)
 * Launches Chromium with WebMCP flags enabled:
   ```python
   args = ["--enable-features=WebMCP,WebMCPTesting", "--no-sandbox"]
@@ -164,10 +164,10 @@ The repository will include an intelligent setup script (`setup.sh`) that inspec
 ## 6. Repository File Layout
 
 ```
-/Users/sreenuraj/laya-webmcp/
+/Users/sreenuraj/laya-browser-agent/
 ├── doc/
 │   └── plan.md                    # Master engineering blueprint (this document)
-├── laya_webmcp/                   # Core Python package
+├── laya_browser_agent/                   # Core Python package
 │   ├── __init__.py                # Package exports
 │   ├── cli.py                     # Rich terminal UI & interactive prompt
 │   ├── agent.py                   # Main autonomous decision orchestrator
@@ -186,7 +186,7 @@ The repository will include an intelligent setup script (`setup.sh`) that inspec
 
 ## 7. Target Metrics & Benchmarks
 
-| Metric | Cloud LLM Web Agent (Claude/GPT-4o) | Laya WebMCP Agent |
+| Metric | Cloud LLM Web Agent (Claude/GPT-4o) | Laya Browser Agent Agent |
 | :--- | :--- | :--- |
 | **Cost per Task** | $0.50 – $2.00 | **$0.00 (Zero)** |
 | **Decision Latency** | 3,000 ms – 8,000 ms per turn | **10 ms – 20 ms per turn** |

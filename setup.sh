@@ -2,7 +2,7 @@
 set -e
 
 echo "=========================================================="
-echo "  Laya WebMCP Autonomous Agent - Environment Setup"
+echo "  Laya Browser Agent Autonomous Agent - Environment Setup"
 echo "=========================================================="
 
 # 1. Inspect Machine Architecture

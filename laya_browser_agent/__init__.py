@@ -1,4 +1,4 @@
-"""Laya WebMCP: Zero-cost autonomous web agent using Laya MLX decision models."""
+"""Laya Browser Agent: Zero-cost autonomous web agent using Laya MLX decision models."""
 
 from .laya_engine import LayaEngine
 from .extractor import SlotExtractor
