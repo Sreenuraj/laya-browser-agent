@@ -267,3 +267,16 @@ def test_shop_fixture_webmcp_tools_mutate_state():
         assert state["orders"][-1]["quantity"] == 2
     finally:
         driver.close()
+
+
+def test_planner_restated_email_host_is_not_a_navigation_target():
+    """Planner wrote 'Navigate to the registration page on work.org' from goal email 'david@work.org'."""
+    from types import SimpleNamespace
+    from laya_browser_agent.agent import LayaAgent
+
+    nav = LayaAgent._extract_navigation_target
+    me = SimpleNamespace(goal="Complete wizard registration for user David (david@work.org) and submit")
+    assert nav(me, "Navigate to the registration page on work.org.") is None
+    # A domain the user also wrote standalone is still a real target
+    both = SimpleNamespace(goal="Go to example.com and sign up as bob@example.com")
+    assert nav(both, "Navigate to example.com") == "https://example.com"

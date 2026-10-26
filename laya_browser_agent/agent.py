@@ -390,6 +390,15 @@ class LayaAgent:
                 if tld not in non_web:
                     domains.append(m.group(0).rstrip(".,;)"))
             # If multiple domains are mentioned (e.g. checking/comparing across sites), it is not a single navigation
+            # The planner may restate an email host as a site ("register on work.org" from "david@work.org").
+            # A domain the user only ever wrote as part of an email address is never a navigation target.
+            goal = (getattr(self, "goal", "") or "").lower()
+            email_hosts = set(re.findall(r"@((?:[a-z0-9\-]+\.)+[a-z]{2,})", goal))
+            standalone = {
+                h for h in email_hosts
+                if re.search(r"(?<![@\w.\-])" + re.escape(h) + r"\b", goal)
+            }
+            domains = [d for d in domains if d.lower().split("/")[0] not in (email_hosts - standalone)]
             if len(domains) == 1:
                 return f"https://{domains[0]}"
 

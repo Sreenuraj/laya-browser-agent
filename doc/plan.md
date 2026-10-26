@@ -4,10 +4,16 @@
 > making the bulk of per-step decisions in milliseconds and a local LLM used only where text generation or
 > deeper reasoning is genuinely needed. Everything runs on your own machine.
 
-This is an experimental project. Progress is judged by trying real tasks (on the bundled practice sites,
-[PostQode Nexus](https://github.com/Sreenuraj/postqode-nexus), and public sites) and checking whether the
-agent did the right thing. The optional `bench/` runner can automate that check, but it is a convenience,
-not a gate.
+This is an experimental project. Progress is judged by trying real tasks and checking whether the agent did the
+right thing. The main test target is **[PostQode Nexus](https://github.com/Sreenuraj/postqode-nexus)** running
+locally (`http://localhost:3000`): a realistic app with login, products, orders, admin approvals and WebMCP tools.
+The small practice sites in `bench/sites/` (`python -m bench serve`) are useful for isolated cases such as
+multi-step forms and overlays, and public sites cover real-web behaviour. The optional `bench/` runner can
+automate the checks, but it is a convenience, not a gate.
+
+Testing on Nexus is fine. The one rule is that nothing Nexus-specific (its tool names, routes or entities) may
+live in the agent's code or prompts, and its traces are not used as fine-tuning data. That way a fix that works on
+Nexus also works on other sites.
 
 Status legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 
@@ -130,7 +136,7 @@ Fix the failure classes in §2 at the root:
 - [ ] **Cache safety**: store macros only after verification, keyed on the success criterion too.
 - [ ] **Split large files**: `agent.py` → `loop.py`, `progress.py`, `navigation.py`, `verify.py`; `browser.py` → `driver.py`, `perception.py`, `overlays.py` (each ≤500 lines).
 
-**Done when:** the example goal in §2 works reliably, form/wizard tasks on the practice sites fill every field before submitting, and the agent no longer reports success on tasks it did not finish.
+**Done when:** the example goal in §2 works reliably on Nexus, the main Nexus user/admin flows (login, order, cancel, approve/reject, check status, logout) complete correctly, the multi-step form on the practice site fills every field before submitting, and the agent no longer reports success on tasks it did not finish.
 
 ### Phase 2 — Let Laya carry the loop
 
@@ -142,7 +148,7 @@ Fix the failure classes in §2 at the root:
 - [ ] Replace remaining keyword classifiers (subtask kind, mutation intent, dialogue turn type, overlay detection) with Laya questions.
 - [ ] LLM fallback only when Laya abstains; every fallback is logged as a training example.
 
-**Done when:** most steps on the practice sites are decided by Laya alone (visible as `llm_fallback: false` in the trajectory log) and the agent feels noticeably faster without getting less accurate.
+**Done when:** most steps on Nexus and the practice sites are decided by Laya alone (visible as `llm_fallback: false` in the trajectory log) and the agent feels noticeably faster without getting less accurate.
 
 ### Phase 3 — Fine-tune Laya (optional, when there is enough data)
 
