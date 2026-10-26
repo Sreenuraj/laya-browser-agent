@@ -1,0 +1,13 @@
+id: t2-forms-004
+tier: T2
+site: fixture/forms
+goal: Complete 3-step registration wizard with name 'Charlie', email 'charlie@test.com'
+  and submit
+oracle:
+  type: state
+  check: state.submitted is True
+max_steps: 15
+tags:
+- wizard
+- submit
+split: heldout

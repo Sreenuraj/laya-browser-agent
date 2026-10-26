@@ -1,0 +1,12 @@
+id: t2-admin-010
+tier: T2
+site: fixture/admin
+goal: Navigate to page 2 using Next button
+oracle:
+  type: state
+  check: state.current_page == 2
+max_steps: 15
+tags:
+- pagination
+- nav
+split: heldout

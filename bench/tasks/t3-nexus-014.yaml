@@ -1,0 +1,23 @@
+id: t3-nexus-014
+tier: T3
+site: http://localhost:3000
+goal: login as admin (admin/Admin@123), go to order management, reject order starting
+  with ORD-14 and logout
+oracle:
+  type: webmcp
+  tool: get_orders
+  login:
+    username: admin
+    password: Admin@123
+  path: /orders
+  field: status
+  expected: REJECTED
+  id_prefix:
+    id: ORD-14
+  match: any
+max_steps: 15
+tags:
+- scenario4
+- admin
+- reject
+split: heldout

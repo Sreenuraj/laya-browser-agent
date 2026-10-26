@@ -1,0 +1,13 @@
+id: t2-shop-009
+tier: T2
+site: fixture/shop
+goal: Order 1 unit of Mechanical Keyboard as user (user/User@123), then check orders
+  list
+oracle:
+  type: state
+  check: len(orders) >= 1 and orders[-1].product == 'Mechanical Keyboard'
+max_steps: 20
+tags:
+- order
+- shop
+split: train

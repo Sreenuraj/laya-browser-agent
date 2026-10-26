@@ -1,0 +1,13 @@
+id: t2-forms-003
+tier: T2
+site: fixture/forms
+goal: Dismiss cookie overlay, enter name 'Bob Jones' and email 'bob@example.com',
+  click Next
+oracle:
+  type: state
+  check: state.banner_dismissed is True and state.current_step >= 2
+max_steps: 15
+tags:
+- overlay
+- form
+split: train

@@ -1,0 +1,12 @@
+id: t2-admin-003
+tier: T2
+site: fixture/admin
+goal: Reject candidate Charlie Brown (USR-003)
+oracle:
+  type: state
+  check: items[2].status == 'REJECTED'
+max_steps: 15
+tags:
+- reject
+- admin
+split: train

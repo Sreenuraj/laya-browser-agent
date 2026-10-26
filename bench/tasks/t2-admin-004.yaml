@@ -1,0 +1,12 @@
+id: t2-admin-004
+tier: T2
+site: fixture/admin
+goal: Select status 'approved' from dropdown filter
+oracle:
+  type: state
+  check: state.selected_filter == 'approved'
+max_steps: 15
+tags:
+- filter
+- dropdown
+split: heldout

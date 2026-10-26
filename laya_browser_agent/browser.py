@@ -1,9 +1,34 @@
+import hashlib
 import json
 import os
+import platform
 import re
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Union
+from urllib.parse import urlparse
 from playwright.sync_api import sync_playwright, Browser, BrowserContext, Page
+
+
+def get_desktop_user_agent() -> str:
+    """Returns a realistic desktop User-Agent string matching the host platform."""
+    sys_name = platform.system()
+    if sys_name == "Windows":
+        return (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/128.0.0.0 Safari/537.36"
+        )
+    elif sys_name == "Linux":
+        return (
+            "Mozilla/5.0 (X11; Linux x86_64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/128.0.0.0 Safari/537.36"
+        )
+    return (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/128.0.0.0 Safari/537.36"
+    )
 
 
 class PlaywrightWebMcpDriver:
@@ -18,28 +43,231 @@ class PlaywrightWebMcpDriver:
         self._browser: Optional[Browser] = None
         self._context: Optional[BrowserContext] = None
         self._page: Optional[Page] = None
+        self._last_screenshot_hash: Optional[str] = None
+        self._last_screenshot_path: Optional[str] = None
 
     def start(self, initial_url: str) -> Page:
-        """Launches Chromium with WebMCP flags and opens the initial URL."""
-        self._pw = sync_playwright().start()
-        self._browser = self._pw.chromium.launch(
-            headless=not self.headed,
-            args=[
-                "--enable-features=WebMCP,WebMCPTesting",
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-            ],
-        )
-        self._context = self._browser.new_context()
-        self._page = self._context.new_page()
-        try:
-            self._page.goto(initial_url, wait_until="domcontentloaded", timeout=10000)
-        except Exception:
+        """Launches Chromium with WebMCP flags and opens the initial URL if not already started."""
+        if not self._pw or not self._page or self._page.is_closed():
+            self._pw = sync_playwright().start()
+            self._browser = self._pw.chromium.launch(
+                headless=not self.headed,
+                args=[
+                    "--enable-features=WebMCP,WebMCPTesting",
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                ],
+            )
+            self._context = self._browser.new_context(
+                viewport={"width": 1280, "height": 960},
+                user_agent=get_desktop_user_agent(),
+                locale="en-US",
+            )
+            self._context.on("page", self._on_page_opened)
+            self._page = self._context.new_page()
             try:
-                self._page.goto(initial_url, timeout=10000)
+                self._page.on("close", self._on_page_closed)
             except Exception:
                 pass
+            if initial_url:
+                try:
+                    self._page.goto(initial_url, wait_until="domcontentloaded", timeout=10000)
+                except Exception:
+                    try:
+                        self._page.goto(initial_url, timeout=10000)
+                    except Exception:
+                        pass
+        else:
+            if initial_url and self._page and not self._page.is_closed():
+                cur = self._page.url.rstrip("/")
+                init = initial_url.rstrip("/")
+                if cur != init and not any(t.get("url", "").rstrip("/") == init for t in self.get_tabs()):
+                    try:
+                        self._page.goto(initial_url, wait_until="domcontentloaded", timeout=10000)
+                    except Exception:
+                        try:
+                            self._page.goto(initial_url, timeout=10000)
+                        except Exception:
+                            pass
         return self._page
+
+    def navigate_to(self, url: str) -> bool:
+        """Navigates the active page to a specific URL."""
+        if not self._page or self._page.is_closed():
+            return False
+        try:
+            self._page.goto(url, wait_until="domcontentloaded", timeout=12000)
+            return True
+        except Exception:
+            try:
+                self._page.goto(url, timeout=12000)
+                return True
+            except Exception:
+                return False
+
+    def _on_page_opened(self, page: Page):
+        """Automatically tracks and focuses newly opened tabs (target='_blank', window.open, popups)."""
+        try:
+            page.wait_for_load_state("domcontentloaded", timeout=4000)
+        except Exception:
+            pass
+        self._page = page
+        try:
+            page.bring_to_front()
+        except Exception:
+            pass
+        try:
+            page.on("close", self._on_page_closed)
+        except Exception:
+            pass
+
+    def _on_page_closed(self, closed_page: Page):
+        """Refocuses remaining active tab when a tab is closed."""
+        if self._context:
+            remaining = [p for p in self._context.pages if not p.is_closed() and p != closed_page]
+            if remaining:
+                if self._page == closed_page or self._page is None or self._page.is_closed():
+                    self._page = remaining[-1]
+                    try:
+                        self._page.bring_to_front()
+                    except Exception:
+                        pass
+            else:
+                self._page = None
+
+    def new_tab(self, url: str = "") -> Page:
+        """Opens a new browser tab/page, focuses it, and optionally navigates to url."""
+        if not self._pw or not self._browser or not self._context:
+            return self.start(url)
+        new_p = self._context.new_page()
+        self._page = new_p
+        if url:
+            try:
+                new_p.goto(url, wait_until="domcontentloaded", timeout=12000)
+            except Exception:
+                try:
+                    new_p.goto(url, timeout=12000)
+                except Exception:
+                    pass
+        return new_p
+
+    def get_tabs(self) -> List[Dict[str, Any]]:
+        """Returns all open browser tabs with index, URL, title, and active flag."""
+        if not self._context:
+            return []
+        tabs = []
+        for idx, p in enumerate(self._context.pages):
+            if not p.is_closed():
+                u = p.url
+                t = ""
+                try:
+                    t = p.title()
+                except Exception:
+                    pass
+                tabs.append({
+                    "index": idx,
+                    "url": u,
+                    "title": t,
+                    "active": (p == self._page),
+                })
+        return tabs
+
+    def switch_tab(self, target: Union[int, str, Any]) -> bool:
+        """
+        Switches the active tab by tab index (int), URL/domain keyword (str), or Page object.
+        Brings the target tab to the front.
+        """
+        if not self._context:
+            return False
+        pages = [p for p in self._context.pages if not p.is_closed()]
+        if not pages:
+            return False
+
+        if isinstance(target, int):
+            if 0 <= target < len(pages):
+                self._page = pages[target]
+                try:
+                    self._page.bring_to_front()
+                except Exception:
+                    pass
+                return True
+            return False
+
+        if isinstance(target, str):
+            kw = target.lower().strip()
+            # 1. Exact or partial domain match
+            for p in pages:
+                p_netloc = urlparse(p.url).netloc.lower()
+                p_url = p.url.lower()
+                if kw in p_netloc or kw in p_url:
+                    self._page = p
+                    try:
+                        self._page.bring_to_front()
+                    except Exception:
+                        pass
+                    return True
+            # 2. Page title match
+            for p in pages:
+                try:
+                    p_title = p.title().lower()
+                    if kw in p_title:
+                        self._page = p
+                        try:
+                            self._page.bring_to_front()
+                        except Exception:
+                            pass
+                        return True
+                except Exception:
+                    pass
+            return False
+
+        if hasattr(target, "bring_to_front") and target in pages:
+            self._page = target
+            try:
+                self._page.bring_to_front()
+            except Exception:
+                pass
+            return True
+
+        return False
+
+    def close_tab(self, target: Optional[Union[int, str, Any]] = None) -> bool:
+        """Closes a specific tab (or active tab) and refocuses remaining tab."""
+        if not self._context:
+            return False
+        pages = [p for p in self._context.pages if not p.is_closed()]
+        if not pages:
+            return False
+
+        page_to_close = self._page
+        if target is not None:
+            if isinstance(target, int) and 0 <= target < len(pages):
+                page_to_close = pages[target]
+            elif isinstance(target, str):
+                kw = target.lower().strip()
+                for p in pages:
+                    if kw in urlparse(p.url).netloc.lower() or kw in p.url.lower():
+                        page_to_close = p
+                        break
+            elif hasattr(target, "close"):
+                page_to_close = target
+
+        if page_to_close:
+            try:
+                page_to_close.close()
+            except Exception:
+                pass
+            remaining = [p for p in self._context.pages if not p.is_closed()]
+            if remaining:
+                self._page = remaining[-1]
+                try:
+                    self._page.bring_to_front()
+                except Exception:
+                    pass
+            else:
+                self._page = None
+            return True
+        return False
 
     @property
     def page(self) -> Page:
@@ -47,11 +275,25 @@ class PlaywrightWebMcpDriver:
             raise RuntimeError("Browser not started. Call driver.start(url) first.")
         return self._page
 
+    @property
+    def current_url(self) -> str:
+        return self.get_active_url()
+
     def get_active_url(self) -> str:
-        return self.page.url
+        if not self._page or self._page.is_closed():
+            return ""
+        try:
+            return self.page.url
+        except Exception:
+            return ""
 
     def get_page_title(self) -> str:
-        return self.page.title()
+        if not self._page or self._page.is_closed():
+            return ""
+        try:
+            return self.page.title()
+        except Exception:
+            return ""
 
     def discover_tools(self) -> List[Dict[str, Any]]:
         """Introspects WebMCP tools registered on the active webpage."""
@@ -130,7 +372,8 @@ class PlaywrightWebMcpDriver:
         # 1. Native Playwright page.webmcp if available
         if hasattr(self.page, "webmcp"):
             try:
-                return self.page.webmcp.call_tool(tool_name, params)  # type: ignore
+                # Bounded: a declarative form tool that never responds would otherwise block 30 s.
+                return self.page.webmcp.call_tool(tool_name, params, timeout=5000)  # type: ignore
             except Exception:
                 pass
 
@@ -139,12 +382,21 @@ class PlaywrightWebMcpDriver:
         async ({ name, params }) => {
             const ctx = window.navigator?.modelContext || window.document?.modelContext;
             let execError = null;
+            // Native executeTool on a declarative form fills it and then waits for a submit that
+            // never comes. Bound every native await; on timeout fall through to the declarative
+            // fallback below, which fills and submits the form itself.
+            const TIMEOUT = Symbol('timeout');
+            const bounded = (p, ms) => Promise.race([p, new Promise(r => setTimeout(() => r(TIMEOUT), ms))]);
             if (ctx && typeof ctx.getTools === 'function') {
                 try {
-                    const tools = await ctx.getTools();
-                    const tool = tools.find(t => t.name === name);
+                    const tools = await bounded(ctx.getTools(), 3000);
+                    const tool = tools === TIMEOUT ? null : tools.find(t => t.name === name);
                     if (tool) {
-                        return await ctx.executeTool(tool, params);
+                        const out = await bounded(ctx.executeTool(tool, params), 5000);
+                        if (out !== TIMEOUT) return out;
+                        if (!document.querySelector(`form[toolname="${name}"]`)) {
+                            return { status: 'timeout', tool: name };
+                        }
                     }
                 } catch (e) {
                     execError = e;
@@ -181,6 +433,10 @@ class PlaywrightWebMcpDriver:
 
     def get_screen_elements(self) -> List[Dict[str, Any]]:
         """Extracts visible interactive screen elements with precise coordinates, roles, and semantic regions."""
+        try:
+            self.dismiss_transient_overlays()
+        except Exception:
+            pass
         js_code = r"""
         () => {
             const elements = [];
@@ -192,7 +448,7 @@ class PlaywrightWebMcpDriver:
                 if (el.tagName === 'BUTTON' && el.closest('a')) continue;
 
                 const rect = el.getBoundingClientRect();
-                if (rect.width <= 0 || rect.height <= 0) continue;
+                if (rect.width <= 0 || rect.height <= 0 || rect.left < -50 || rect.top < -50) continue;
 
                 const isTableRow = el.closest('tr, [data-row], .card, li');
                 const isPagination = el.closest('nav[aria-label*="pagination" i], .pagination, [data-pagination]') || (el.innerText || '').toLowerCase().includes('next') || (el.innerText || '').toLowerCase().includes('previous');
@@ -200,7 +456,7 @@ class PlaywrightWebMcpDriver:
                 if (!isInViewport && (!isTableRow && !isPagination || rect.top > 8000)) continue;
                 if ((el.disabled && !isPagination) || el.type === 'hidden') continue;
                 
-                let text = (el.innerText || el.value || el.placeholder || el.getAttribute('aria-label') || el.getAttribute('title') || el.name || el.id || '').trim();
+                let text = (el.innerText || el.value || el.placeholder || el.getAttribute('aria-label') || el.getAttribute('title') || el.name || el.id || '').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim();
 
                 // Form label lookup for inputs / textareas / selects
                 if (!text && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT')) {
@@ -215,32 +471,40 @@ class PlaywrightWebMcpDriver:
                     }
                 }
 
-                if (!text && el.tagName === 'BUTTON') {
-                    const svg = el.querySelector('svg');
-                    const cls = (el.className || '') + ' ' + (svg ? (svg.getAttribute('class') || '') : '');
-                    let actionName = '';
-                    if (cls.includes('lucide-x') || cls.includes('cancel') || cls.includes('close')) actionName = 'Cancel';
-                    else if (cls.includes('lucide-trash') || cls.includes('delete')) actionName = 'Delete';
-                    else if (cls.includes('lucide-check') || cls.includes('approve')) actionName = 'Approve';
-                    else if (cls.includes('lucide-pencil') || cls.includes('edit')) actionName = 'Edit';
-
-                    const row = el.closest('tr, li, [data-row], .card');
-                    const rowText = row ? row.innerText.trim() : '';
-                    const firstToken = rowText ? rowText.split(/\s+/)[0].slice(0, 15).trim() : '';
-                    
-                    // On admin orders table, if row contains both approve and reject buttons
-                    if (actionName === 'Cancel' && row && row.querySelector('svg.lucide-check')) {
-                        actionName = 'Reject';
+                if (!text && (el.tagName === 'BUTTON' || el.getAttribute('role') === 'button')) {
+                    text = el.getAttribute('aria-label') || el.getAttribute('title') || '';
+                    if (!text) {
+                        const svg = el.querySelector('svg');
+                        if (svg) {
+                            text = svg.getAttribute('aria-label') || svg.getAttribute('title') || '';
+                            if (!text) {
+                                const titleEl = svg.querySelector('title');
+                                if (titleEl) text = titleEl.textContent || '';
+                            }
+                        }
                     }
+                    if (!text) {
+                        const cls = (el.className || '') + ' ' + (el.querySelector('svg')?.getAttribute('class') || '');
+                        let actionName = '';
+                        if (/cancel|close|reject|dismiss/i.test(cls)) actionName = 'Cancel';
+                        else if (/delete|trash|remove/i.test(cls)) actionName = 'Delete';
+                        else if (/check|approve|confirm|accept/i.test(cls)) actionName = 'Approve';
+                        else if (/edit|pencil|modify/i.test(cls)) actionName = 'Edit';
 
-                    if (actionName && firstToken) text = `${actionName} ${firstToken}`;
-                    else if (actionName) text = actionName;
-                    else if (firstToken) text = `Action ${firstToken}`;
+                        const row = el.closest('tr, li, [data-row], .card, [role="row"]');
+                        const rowText = row ? row.innerText.trim() : '';
+                        const firstToken = rowText ? rowText.split(/\s+/)[0].slice(0, 15).trim() : '';
+
+                        if (actionName && firstToken) text = `${actionName} ${firstToken}`;
+                        else if (actionName) text = actionName;
+                        else if (firstToken) text = `Action ${firstToken}`;
+                    }
                 }
                 if (!text && el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA') continue;
                 
                 const x = Math.round(rect.left + rect.width / 2);
                 const y = Math.round(rect.top + rect.height / 2);
+                if (x < 0 || y < 0) continue;
                 const key = `${x},${y}`;
                 if (seen.has(key)) continue;
                 seen.add(key);
@@ -260,7 +524,7 @@ class PlaywrightWebMcpDriver:
                 elements.push({
                     tag: el.tagName.toLowerCase(),
                     type: (el.type || '').toLowerCase(),
-                    text: text.slice(0, 45),
+                    text: text.slice(0, 80),
                     role: el.getAttribute('role') || '',
                     aria_expanded: el.getAttribute('aria-expanded') || '',
                     region: region,
@@ -283,7 +547,14 @@ class PlaywrightWebMcpDriver:
         }
         """
         try:
-            return self.page.evaluate(js_code) or []
+            elems = self.page.evaluate(js_code) or []
+            if not elems and not self.page.is_closed():
+                try:
+                    self.page.wait_for_timeout(800)
+                    elems = self.page.evaluate(js_code) or []
+                except Exception:
+                    pass
+            return elems
         except Exception:
             return []
 
@@ -319,18 +590,20 @@ class PlaywrightWebMcpDriver:
         except Exception:
             return []
 
-    def click(self, target: str = "", x: Optional[float] = None, y: Optional[float] = None) -> bool:
-        """
-        Playwright native click: locates target anywhere in document, auto-scrolls into view,
-        verifies actionability, and clicks. Falls back to screen coordinates if target lookup fails.
-        """
+    def _raw_click(self, target: str = "", x: Optional[float] = None, y: Optional[float] = None) -> bool:
+        """Internal Playwright native click without retry."""
         clean_target = (target or "").strip()
         if clean_target:
-            # 1. Try Playwright text/button locator with built-in auto-scroll
+            # 1. Try Playwright text/button/role locator with built-in auto-scroll
             for loc_str in (
                 f"button:has-text({json.dumps(clean_target)})",
                 f"a:has-text({json.dumps(clean_target)})",
                 f"[role='button']:has-text({json.dumps(clean_target)})",
+                f"[role='tab']:has-text({json.dumps(clean_target)})",
+                f"[role='checkbox']:has-text({json.dumps(clean_target)})",
+                f"[role='menuitem']:has-text({json.dumps(clean_target)})",
+                f"label:has-text({json.dumps(clean_target)})",
+                f"[aria-label*={json.dumps(clean_target)} i]",
             ):
                 try:
                     locator = self.page.locator(loc_str).first
@@ -349,12 +622,12 @@ class PlaywrightWebMcpDriver:
                 row_loc = self.page.locator(f"tr:has-text({json.dumps(search_key)}), [data-row]:has-text({json.dumps(search_key)}), li:has-text({json.dumps(search_key)})").first
                 if row_loc.count() > 0:
                     btn = None
-                    if any(w in clean_target.lower() for w in ("cancel", "reject", "delete")):
-                        btn_cand = row_loc.locator("button:has(svg.lucide-x), button:has(svg.lucide-trash), button:has-text('Cancel'), button:has-text('Reject')").first
+                    if any(w in clean_target.lower() for w in ("cancel", "reject", "delete", "remove")):
+                        btn_cand = row_loc.locator("button[aria-label*='cancel' i], button[aria-label*='reject' i], button[aria-label*='delete' i], button:has-text('Cancel'), button:has-text('Reject'), button:has-text('Delete')").first
                         if btn_cand.count() > 0:
                             btn = btn_cand
-                    elif any(w in clean_target.lower() for w in ("approve", "check")):
-                        btn_cand = row_loc.locator("button:has(svg.lucide-check), button:has-text('Approve')").first
+                    elif any(w in clean_target.lower() for w in ("approve", "confirm", "accept", "check")):
+                        btn_cand = row_loc.locator("button[aria-label*='approve' i], button[aria-label*='confirm' i], button:has-text('Approve'), button:has-text('Confirm')").first
                         if btn_cand.count() > 0:
                             btn = btn_cand
 
@@ -407,33 +680,97 @@ class PlaywrightWebMcpDriver:
 
         return False
 
-    def fill(self, target: str = "", value: Any = "", x: Optional[float] = None, y: Optional[float] = None, press_enter: bool = False) -> bool:
+    def click(self, target: str = "", x: Optional[float] = None, y: Optional[float] = None) -> bool:
         """
-        Playwright native fill: locates input/form field by placeholder, label, name, or id,
-        auto-scrolls into view, clears, and fills value.
+        Playwright native click: locates target anywhere in document, auto-scrolls into view,
+        verifies actionability, and clicks.
+        If blocked or failed, attempts transient overlay / popup dismissal and retries once.
         """
+        pages_before = len(self._context.pages) if self._context else 1
+        res = self._raw_click(target=target, x=x, y=y)
+        if not res:
+            try:
+                dismissed = self.dismiss_transient_overlays()
+                if dismissed or self._has_blocking_overlay():
+                    time.sleep(0.15)
+                    res = self._raw_click(target=target, x=x, y=y)
+            except Exception:
+                pass
+
+        # Check if click spawned a new tab/window (target="_blank" or window.open)
+        if self._context:
+            pages = [p for p in self._context.pages if not p.is_closed()]
+            if len(pages) > pages_before:
+                self._page = pages[-1]
+                try:
+                    self._page.wait_for_load_state("domcontentloaded", timeout=4000)
+                except Exception:
+                    pass
+                try:
+                    self._page.bring_to_front()
+                except Exception:
+                    pass
+        return res
+
+    def _raw_fill(self, target: str = "", value: Any = "", x: Optional[float] = None, y: Optional[float] = None, press_enter: bool = False) -> bool:
+        """Internal Playwright native fill without retry."""
         val_str = str(value) if value is not None else ""
         clean_target = (target or "").strip()
         if clean_target:
-            # Try Playwright locators for inputs
-            for loc_str in (
-                f"input[name={json.dumps(clean_target)}]",
-                f"input#{clean_target}",
-                f"input[placeholder*={json.dumps(clean_target)} i]",
-                f"textarea[name={json.dumps(clean_target)}]",
-                f"textarea#{clean_target}",
-                f"input[aria-label*={json.dumps(clean_target)} i]",
-            ):
+            variations = [clean_target]
+            if "_" in clean_target:
+                variations.append(clean_target.replace("_", "-"))
+                variations.append(clean_target.replace("_", " "))
+            if "-" in clean_target:
+                variations.append(clean_target.replace("-", "_"))
+                variations.append(clean_target.replace("-", " "))
+
+            # Try Playwright locators for inputs across target variations
+            for var in variations:
+                for loc_str in (
+                    f"input[name={json.dumps(var)}]",
+                    f"input#{var}",
+                    f"input[placeholder*={json.dumps(var)} i]",
+                    f"textarea[name={json.dumps(var)}]",
+                    f"textarea#{var}",
+                    f"textarea[placeholder*={json.dumps(var)} i]",
+                    f"input[aria-label*={json.dumps(var)} i]",
+                    f"input[title*={json.dumps(var)} i]",
+                    f"input[data-testid*={json.dumps(var)} i]",
+                ):
+                    try:
+                        locator = self.page.locator(loc_str).first
+                        if locator.count() > 0:
+                            locator.scroll_into_view_if_needed(timeout=1000)
+                            locator.fill(val_str, timeout=1500)
+                            if press_enter:
+                                locator.press("Enter")
+                            return True
+                    except Exception:
+                        continue
+
+                # Also try get_by_label and get_by_placeholder
                 try:
-                    locator = self.page.locator(loc_str).first
-                    if locator.count() > 0:
-                        locator.scroll_into_view_if_needed(timeout=1000)
-                        locator.fill(val_str, timeout=1500)
+                    by_lbl = self.page.get_by_label(var, exact=False).first
+                    if by_lbl.count() > 0:
+                        by_lbl.scroll_into_view_if_needed(timeout=1000)
+                        by_lbl.fill(val_str, timeout=1500)
                         if press_enter:
-                            locator.press("Enter")
+                            by_lbl.press("Enter")
                         return True
                 except Exception:
-                    continue
+                    pass
+
+                try:
+                    by_ph = self.page.get_by_placeholder(var, exact=False).first
+                    if by_ph.count() > 0:
+                        by_ph.scroll_into_view_if_needed(timeout=1000)
+                        by_ph.fill(val_str, timeout=1500)
+                        if press_enter:
+                            by_ph.press("Enter")
+                        return True
+                except Exception:
+                    pass
 
         # Fallback to coordinates
         if x is not None and y is not None:
@@ -450,6 +787,23 @@ class PlaywrightWebMcpDriver:
                 pass
 
         return False
+
+    def fill(self, target: str = "", value: Any = "", x: Optional[float] = None, y: Optional[float] = None, press_enter: bool = False) -> bool:
+        """
+        Playwright native fill: locates input/form field by placeholder, label, name, or id,
+        auto-scrolls into view, clears, and fills value.
+        If blocked or failed, attempts transient overlay / popup dismissal and retries once.
+        """
+        res = self._raw_fill(target=target, value=value, x=x, y=y, press_enter=press_enter)
+        if not res:
+            try:
+                dismissed = self.dismiss_transient_overlays()
+                if dismissed or self._has_blocking_overlay():
+                    time.sleep(0.15)
+                    res = self._raw_fill(target=target, value=value, x=x, y=y, press_enter=press_enter)
+            except Exception:
+                pass
+        return res
 
     def select_dropdown(self, target: str = "", value: str = "") -> bool:
         """
@@ -468,12 +822,24 @@ class PlaywrightWebMcpDriver:
         # 1. Native HTML <select>
         if clean_target:
             try:
-                sel = self.page.locator(f"select[name*={json.dumps(clean_target)} i], select#{clean_target}").first
+                sel = self.page.locator(f"select[name*={json.dumps(clean_target)} i], select#{clean_target}, select[aria-label*={json.dumps(clean_target)} i]").first
                 if sel.count() > 0:
-                    sel.select_option(label=clean_value)
-                    return True
+                    try:
+                        sel.select_option(label=clean_value)
+                        return True
+                    except Exception:
+                        sel.select_option(value=clean_value)
+                        return True
             except Exception:
                 pass
+
+        try:
+            sel_opt = self.page.locator(f"select:has(option:has-text({json.dumps(clean_value)}))").first
+            if sel_opt.count() > 0:
+                sel_opt.select_option(label=clean_value)
+                return True
+        except Exception:
+            pass
 
         # 2. Open combobox / dropdown trigger if not already open
         if clean_target:
@@ -528,6 +894,88 @@ class PlaywrightWebMcpDriver:
         except Exception:
             return False
 
+    def _has_blocking_overlay(self) -> bool:
+        """Checks if a modal, dialog, or overlay backdrop is active on screen."""
+        if not self._page or self._page.is_closed():
+            return False
+        try:
+            return self.page.locator("[role='dialog'], [role='alertdialog'], [aria-modal='true'], .modal.show, div[class*='backdrop' i], div[class*='overlay' i]:has(button)").count() > 0
+        except Exception:
+            return False
+
+    def dismiss_transient_overlays(self) -> bool:
+        """Dismisses generic blocking popups, login modals, promo dialogs, or cookie banners if present."""
+        if not self._page or self._page.is_closed():
+            return False
+        dismiss_selectors = [
+            # Standard close icons & glyphs (cross, multiplication, letter x)
+            "button:has-text('✕')",
+            "button:has-text('×')",
+            "button:has-text('✕ ')",
+            "button:has-text('✕')",
+            "span:has-text('✕')",
+            "span:has-text('×')",
+            "[aria-label*='close' i]",
+            "[title*='close' i]",
+            "[data-dismiss='modal']",
+            "[data-bs-dismiss='modal']",
+            # Common e-commerce & web modals (Flipkart login wall, Amazon address, Quora/Medium popups)
+            "button._2KpZ6l._2doB4z",
+            "button._2doB4z",
+            "span._30XB9k",
+            "div._2QfC02 button",
+            "span[role='button']:has-text('✕')",
+            "span[role='button']:has-text('×')",
+            "button[class*='close' i]",
+            "button[class*='dismiss' i]",
+            # Common promo/newsletter/auth action buttons
+            "button:has-text('Not now')",
+            "button:has-text('Maybe later')",
+            "button:has-text('No thanks')",
+            "button:has-text('Skip')",
+            "button:has-text('Dismiss')",
+            "button:has-text('Continue without')",
+            "button:has-text('Continue shopping')",
+            "a:has-text('Continue shopping')",
+            "button:has-text('Stay on web')",
+            # Cookie and GDPR consent
+            "button:has-text('Accept all')",
+            "button:has-text('Accept all cookies')",
+            "button:has-text('Accept Cookies')",
+            "button:has-text('Allow all')",
+            "button:has-text('I Agree')",
+            "button:has-text('Got it')",
+            "button:has-text('I understand')",
+            # Dialog-scoped buttons
+            "[role='dialog'] button:has-text('Close')",
+            "[role='dialog'] [aria-label*='close' i]",
+            "[role='dialog'] span[role='button']",
+            "[role='alertdialog'] button:has-text('Close')",
+            "[role='alertdialog'] [aria-label*='close' i]",
+        ]
+        dismissed = False
+        for sel in dismiss_selectors:
+            try:
+                loc = self.page.locator(sel).first
+                if loc.count() > 0 and loc.is_visible():
+                    loc.click(timeout=600)
+                    dismissed = True
+                    time.sleep(0.15)
+                    break
+            except Exception:
+                continue
+
+        # If an active modal/dialog is still present, try pressing Escape key
+        try:
+            if self._has_blocking_overlay():
+                self.page.keyboard.press("Escape")
+                time.sleep(0.1)
+                dismissed = True
+        except Exception:
+            pass
+
+        return dismissed
+
     def wait_for_settled(self, timeout_ms: int = 2000):
         """Waits for network and URL to settle after an action."""
         try:
@@ -535,17 +983,64 @@ class PlaywrightWebMcpDriver:
             self.page.wait_for_load_state("networkidle", timeout=min(300, timeout_ms))
         except Exception:
             pass
+        try:
+            self.dismiss_transient_overlays()
+        except Exception:
+            pass
+        if self._context:
+            pages = [p for p in self._context.pages if not p.is_closed()]
+            if pages and (self._page is None or self._page.is_closed() or self._page not in pages):
+                self._page = pages[-1]
+                try:
+                    self._page.bring_to_front()
+                except Exception:
+                    pass
 
-    def take_screenshot(self, filepath: Optional[str] = None, full_page: bool = True) -> str:
-        """Captures a screenshot of the current page and returns saved file path."""
+    def wait_for_page_interactive(self, timeout_ms: int = 2000):
+        """Waits for DOM and primary interactive elements to become actionable."""
+        try:
+            self.page.wait_for_load_state("domcontentloaded", timeout=timeout_ms)
+        except Exception:
+            pass
+        try:
+            self.dismiss_transient_overlays()
+        except Exception:
+            pass
+
+    def take_screenshot(self, filepath: Optional[str] = None, full_page: bool = True, force: bool = False) -> str:
+        """Captures a screenshot of the current page and returns saved file path.
+        
+        If the captured screenshot byte content is identical to the last captured screenshot,
+        avoids writing duplicate files to disk and returns the previous screenshot path.
+        """
         if not filepath:
             os.makedirs("reports", exist_ok=True)
             filepath = os.path.join("reports", f"screenshot_{int(time.time() * 1000)}.png")
         os.makedirs(os.path.dirname(os.path.abspath(filepath)), exist_ok=True)
         try:
-            self.page.screenshot(path=filepath, full_page=full_page)
+            if self._page:
+                try:
+                    self._page.evaluate("() => window.scrollTo(0, 0)")
+                except Exception:
+                    pass
+            raw_bytes = self.page.screenshot(full_page=full_page)
         except Exception:
-            self.page.screenshot(path=filepath)
+            raw_bytes = self.page.screenshot()
+
+        cur_hash = hashlib.md5(raw_bytes).hexdigest()
+        if (
+            not force
+            and self._last_screenshot_hash == cur_hash
+            and self._last_screenshot_path
+            and os.path.exists(self._last_screenshot_path)
+        ):
+            return self._last_screenshot_path
+
+        with open(filepath, "wb") as f:
+            f.write(raw_bytes)
+
+        self._last_screenshot_hash = cur_hash
+        self._last_screenshot_path = filepath
         return filepath
 
     def get_scroll_state(self) -> Dict[str, Any]:
@@ -594,10 +1089,33 @@ class PlaywrightWebMcpDriver:
         self.page.reload(wait_until="domcontentloaded")
 
     def close(self):
-        """Closes browser session."""
-        if self._browser:
-            self._browser.close()
-        if self._pw:
-            self._pw.stop()
+        """Closes browser session safely."""
+        try:
+            if self._context:
+                for p in list(self._context.pages):
+                    try:
+                        p.close()
+                    except Exception:
+                        pass
+                try:
+                    self._context.close()
+                except Exception:
+                    pass
+                self._context = None
+            self._page = None
+            if self._browser:
+                self._browser.close()
+                self._browser = None
+        except Exception:
+            pass
+        finally:
+            try:
+                if self._pw:
+                    self._pw.stop()
+                    self._pw = None
+            except Exception:
+                pass
 
-
+    def stop(self):
+        """Alias for close() to cleanly shut down browser regardless of caller naming convention."""
+        self.close()

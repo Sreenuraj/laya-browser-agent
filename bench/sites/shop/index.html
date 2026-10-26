@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Generic Shop Web App</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 20px; background: #f8fafc; color: #1e293b; }
+    header { display: flex; justify-content: space-between; align-items: center; background: #ffffff; padding: 12px 24px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 20px; }
+    nav a, nav button { margin-left: 12px; text-decoration: none; color: #3b82f6; font-weight: 500; background: none; border: none; cursor: pointer; font-size: 14px; }
+    .card { background: #ffffff; padding: 20px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); margin-bottom: 20px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+    th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid #e2e8f0; }
+    th { background: #f1f5f9; color: #475569; font-size: 13px; text-transform: uppercase; }
+    .btn { background: #2563eb; color: #ffffff; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: 500; }
+    .btn:hover { background: #1d4ed8; }
+    .btn-secondary { background: #64748b; }
+    .btn-danger { background: #ef4444; }
+    .badge { padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: 600; }
+    .badge-in { background: #dcfce7; color: #166534; }
+    .badge-out { background: #fee2e2; color: #991b1b; }
+    .badge-pending { background: #fef3c7; color: #92400e; }
+    .badge-cancelled { background: #f1f5f9; color: #64748b; }
+    input[type="text"], input[type="password"], input[type="number"] { padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 6px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h2>Acme Hardware Store</h2>
+    <nav id="navbar">
+      <a href="#products" id="nav-products">Products</a>
+      <a href="#orders" id="nav-orders">My Orders</a>
+      <button id="nav-logout" onclick="logout()" style="display:none;">Logout</button>
+      <span id="user-greeting" style="display:none; font-weight:600; margin-left:10px;"></span>
+    </nav>
+  </header>
+
+  <!-- Login Card -->
+  <div id="login-section" class="card">
+    <h3>Sign In</h3>
+    <form id="login-form" toolname="sign_in" toolautosubmit tooldescription="Authenticates user into the shop system" onsubmit="toolSubmit(event, login)">
+      <div style="margin-bottom: 12px;">
+        <label>Username: </label>
+        <input type="text" id="username" name="username" placeholder="user" required toolparamdescription="Login username" />
+      </div>
+      <div style="margin-bottom: 12px;">
+        <label>Password: </label>
+        <input type="password" id="password" name="password" placeholder="••••••••" required toolparamdescription="User account password" />
+      </div>
+      <button type="submit" id="btn-login" class="btn">Log In</button>
+    </form>
+  </div>
+
+  <!-- Products Card -->
+  <div id="products-section" class="card">
+    <h3>Products Catalog</h3>
+    <table>
+      <thead>
+        <tr><th>Product</th><th>Price</th><th>Availability</th><th>Quantity</th><th>Action</th></tr>
+      </thead>
+      <tbody id="products-tbody">
+        <tr id="row-prod-1">
+          <td>Wireless Ergonomic Mouse</td>
+          <td>$29.99</td>
+          <td><span class="badge badge-in">IN_STOCK</span></td>
+          <td><input type="number" id="qty-prod-1" name="quantity" value="1" min="1" max="10" style="width:60px;" /></td>
+          <td><button class="btn" id="buy-prod-1" onclick="orderProduct('Wireless Ergonomic Mouse', 'qty-prod-1')">Buy</button></td>
+        </tr>
+        <tr id="row-prod-2">
+          <td>Mechanical Keyboard</td>
+          <td>$89.99</td>
+          <td><span class="badge badge-in">IN_STOCK</span></td>
+          <td><input type="number" id="qty-prod-2" name="quantity" value="1" min="1" max="5" style="width:60px;" /></td>
+          <td><button class="btn" id="buy-prod-2" onclick="orderProduct('Mechanical Keyboard', 'qty-prod-2')">Buy</button></td>
+        </tr>
+        <tr id="row-prod-3">
+          <td>USB-C Dual Dock</td>
+          <td>$59.99</td>
+          <td><span class="badge badge-out">OUT_OF_STOCK</span></td>
+          <td><input type="number" id="qty-prod-3" name="quantity" value="1" min="1" disabled style="width:60px;" /></td>
+          <td><button class="btn btn-secondary" id="buy-prod-3" disabled>Sold Out</button></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Orders Card -->
+  <div id="orders-section" class="card">
+    <h3>My Orders</h3>
+    <form id="order-tool-form" toolname="submit_purchase" toolautosubmit tooldescription="Places order for product with specified quantity" style="display:none;" onsubmit="toolSubmit(event, submitPurchase)">
+      <input name="product" toolparamdescription="Product name" />
+      <input name="quantity" toolparamdescription="Number of units" />
+    </form>
+    <div id="orders-list">
+      <p id="no-orders" style="color: #64748b;">No orders placed yet.</p>
+      <table id="orders-table" style="display:none;">
+        <thead>
+          <tr><th>Order ID</th><th>Product</th><th>Quantity</th><th>Status</th><th>Action</th></tr>
+        </thead>
+        <tbody id="orders-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    async function refreshState() {
+      try {
+        const res = await fetch('/shop/__state');
+        const st = await res.json();
+        if (st.logged_in_user) {
+          document.getElementById('login-section').style.display = 'none';
+          document.getElementById('nav-logout').style.display = 'inline';
+          const greet = document.getElementById('user-greeting');
+          greet.textContent = `(${st.logged_in_user})`;
+          greet.style.display = 'inline';
+        } else {
+          document.getElementById('login-section').style.display = 'block';
+          document.getElementById('nav-logout').style.display = 'none';
+          document.getElementById('user-greeting').style.display = 'none';
+        }
+
+        const tbody = document.getElementById('orders-tbody');
+        tbody.innerHTML = '';
+        if (st.orders && st.orders.length > 0) {
+          document.getElementById('no-orders').style.display = 'none';
+          document.getElementById('orders-table').style.display = 'table';
+          st.orders.forEach(o => {
+            const tr = document.createElement('tr');
+            const badgeCls = o.status === 'PENDING' ? 'badge-pending' : (o.status === 'CANCELLED' ? 'badge-cancelled' : 'badge-in');
+            const cancelBtn = o.status === 'PENDING' ? `<button class="btn btn-danger" onclick="cancelOrder('${o.id}')">Cancel Order</button>` : '—';
+            tr.innerHTML = `<td>${o.id}</td><td>${o.product}</td><td>${o.quantity}</td><td><span class="badge ${badgeCls}">${o.status}</span></td><td>${cancelBtn}</td>`;
+            tbody.appendChild(tr);
+          });
+        } else {
+          document.getElementById('no-orders').style.display = 'block';
+          document.getElementById('orders-table').style.display = 'none';
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    // Declarative WebMCP forms: answer agent-invoked submits via respondWith so native callers resolve.
+    function toolSubmit(event, handler) {
+      event.preventDefault();
+      const done = handler(event.target).then(() => ({ content: [{ type: 'text', text: 'ok' }] }));
+      if (typeof event.respondWith === 'function') event.respondWith(done);
+    }
+
+    async function submitPurchase(form) {
+      const q = parseInt(form.elements.quantity.value || '1', 10);
+      await fetch('/shop/api/order', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({product: form.elements.product.value, quantity: q})
+      });
+      refreshState();
+    }
+
+    async function login() {
+      const u = document.getElementById('username').value;
+      await fetch('/shop/api/login', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({username: u})
+      });
+      refreshState();
+    }
+
+    async function logout() {
+      await fetch('/shop/api/login', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({username: null})
+      });
+      refreshState();
+    }
+
+    async function orderProduct(name, qtyInputId) {
+      const q = parseInt(document.getElementById(qtyInputId).value || '1', 10);
+      await fetch('/shop/api/order', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({product: name, quantity: q})
+      });
+      refreshState();
+    }
+
+    async function cancelOrder(orderId) {
+      await fetch('/shop/api/cancel', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({order_id: orderId})
+      });
+      refreshState();
+    }
+
+    // Polling refresh
+    setInterval(refreshState, 1000);
+    refreshState();
+  </script>
+</body>
+</html>

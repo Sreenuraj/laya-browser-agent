@@ -1,0 +1,12 @@
+id: t2-admin-002
+tier: T2
+site: fixture/admin
+goal: Approve candidate Alice Smith (USR-001)
+oracle:
+  type: state
+  check: items[0].status == 'APPROVED'
+max_steps: 15
+tags:
+- approve
+- admin
+split: heldout

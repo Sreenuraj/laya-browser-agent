@@ -1,0 +1,12 @@
+id: t2-forms-008
+tier: T2
+site: fixture/forms
+goal: Enter registration details for Eva (eva@lab.io), advance steps and submit
+oracle:
+  type: state
+  check: state.submitted is True
+max_steps: 15
+tags:
+- wizard
+- submit
+split: heldout

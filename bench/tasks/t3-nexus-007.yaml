@@ -1,0 +1,23 @@
+id: t3-nexus-007
+tier: T3
+site: http://localhost:3000
+goal: login as user (user/User@123), got to my order, cancel my order starting with
+  ORD-7 and logout
+oracle:
+  type: webmcp
+  tool: get_my_orders
+  login:
+    username: user
+    password: User@123
+  path: /my-orders
+  field: status
+  expected: CANCELLED
+  id_prefix:
+    id: ORD-7
+  match: any
+max_steps: 15
+tags:
+- scenario2
+- user
+- cancel
+split: train

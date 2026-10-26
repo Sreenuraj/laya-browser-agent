@@ -16,7 +16,7 @@ echo "      Architecture:     $ARCH"
 if [ "$OS" = "Darwin" ] && [ "$ARCH" = "arm64" ]; then
     echo "      ✓ Apple Silicon detected! Native Metal GPU acceleration enabled."
 else
-    echo "      ! Warning: Non-Apple Silicon host. MLX requires macOS arm64."
+    echo "      i Host is $OS ($ARCH). Decision loop will run via local LLM / CPU runner."
 fi
 
 # 2. Check Python
@@ -40,39 +40,49 @@ if [ -z "$PYTHON_BIN" ]; then
     exit 1
 fi
 
-# 3. Create or reuse virtual environment
+# 3. Create virtual environment
 echo "[3/5] Setting up virtual environment..."
 VENV_DIR=".venv"
-if [ -d "/Users/sreenuraj/laya-test/laya-env" ] && [ ! -d "$VENV_DIR" ]; then
-    echo "      Found existing pre-configured laya-env. Linking dependencies..."
-    "$PYTHON_BIN" -m venv "$VENV_DIR" --system-site-packages || cp -r /Users/sreenuraj/laya-test/laya-env "$VENV_DIR"
-elif [ ! -d "$VENV_DIR" ]; then
+if [ ! -d "$VENV_DIR" ]; then
     "$PYTHON_BIN" -m venv "$VENV_DIR"
 fi
 
-source "$VENV_DIR/bin/activate"
-pip install --upgrade pip --quiet
-pip install -r requirements.txt --quiet
+"$VENV_DIR/bin/pip" install --upgrade pip --quiet
+"$VENV_DIR/bin/pip" install -r requirements.txt --quiet
+if [ -f "requirements-dev.txt" ]; then
+    "$VENV_DIR/bin/pip" install -r requirements-dev.txt --quiet
+fi
 echo "      ✓ Dependencies installed successfully."
 
 # 4. Install Playwright Chromium
 echo "[4/5] Provisioning Playwright Chromium browser..."
-playwright install chromium
+if [ "$OS" = "Linux" ]; then
+    "$VENV_DIR/bin/playwright" install --with-deps chromium 2>/dev/null || "$VENV_DIR/bin/playwright" install chromium
+else
+    "$VENV_DIR/bin/playwright" install chromium
+fi
 echo "      ✓ Chromium browser binary is ready."
 
 # 5. Inspect Model & Ollama
 echo "[5/5] Verifying models..."
-python3 -c "
+if [ "$OS" = "Darwin" ] && [ "$ARCH" = "arm64" ]; then
+    "$VENV_DIR/bin/python" -c "
 from pathlib import Path
 cache_dir = Path.home() / '.cache' / 'huggingface' / 'hub' / 'models--aac6fef--laya-mlx'
 if cache_dir.exists():
     print('      ✓ Laya MLX model found in local cache!')
 else:
-    print('      i Downloading Laya MLX model weights...')
-    from laya_mlx import Agent
-    Agent('aac6fef/laya-mlx')
-    print('      ✓ Laya model downloaded and cached.')
+    try:
+        print('      i Downloading Laya MLX model weights...')
+        from laya_mlx import Agent
+        Agent('aac6fef/laya-mlx')
+        print('      ✓ Laya model downloaded and cached.')
+    except Exception as e:
+        print(f'      ! Notice: Could not pre-cache Laya MLX model: {e}')
 "
+else
+    echo "      i Non-Apple Silicon host. Local decision policy runs via local LLM / Ollama runner."
+fi
 
 if curl -s http://localhost:11434/api/tags >/dev/null 2>&1; then
     echo "      ✓ Local Ollama service detected on port 11434 (zero-cost parameter extraction enabled)."

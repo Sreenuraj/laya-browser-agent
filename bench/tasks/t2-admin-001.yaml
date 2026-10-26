@@ -1,0 +1,12 @@
+id: t2-admin-001
+tier: T2
+site: fixture/admin
+goal: Filter admin candidates by status 'pending'
+oracle:
+  type: state
+  check: state.selected_filter == 'pending'
+max_steps: 15
+tags:
+- filter
+- admin
+split: train

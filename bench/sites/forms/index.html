@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Application Form Wizard</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 20px; background: #f8fafc; color: #1e293b; }
+    .overlay-banner { position: fixed; bottom: 0; left: 0; right: 0; background: #1e293b; color: #f8fafc; padding: 16px 24px; display: flex; justify-content: space-between; align-items: center; z-index: 1000; box-shadow: 0 -2px 10px rgba(0,0,0,0.15); }
+    .container { max-width: 600px; margin: 40px auto; background: #ffffff; padding: 32px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+    .step-indicator { display: flex; justify-content: space-between; margin-bottom: 24px; font-weight: 600; font-size: 14px; color: #64748b; }
+    .step-active { color: #2563eb; }
+    .form-group { margin-bottom: 16px; }
+    label { display: block; margin-bottom: 6px; font-weight: 500; font-size: 14px; }
+    input[type="text"], input[type="email"], select, textarea { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 14px; }
+    .btn { background: #2563eb; color: #ffffff; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 500; }
+    .btn:hover { background: #1d4ed8; }
+    .btn-secondary { background: #64748b; }
+    .alert-success { background: #dcfce7; color: #166534; padding: 16px; border-radius: 6px; font-weight: 500; text-align: center; }
+  </style>
+</head>
+<body>
+  <!-- Overlay Banner -->
+  <div id="cookie-overlay" class="overlay-banner">
+    <div>
+      <strong>Privacy Notice:</strong> We use cookies to enhance user experience on this portal.
+    </div>
+    <div>
+      <button class="btn btn-secondary" id="btn-dismiss-cookie" onclick="dismissBanner()">Dismiss</button>
+      <button class="btn" id="btn-accept-cookie" onclick="dismissBanner()">Accept All</button>
+    </div>
+  </div>
+
+  <div class="container">
+    <h2>Registration Wizard</h2>
+    <div class="step-indicator">
+      <span id="ind-step-1" class="step-active">1. Account</span>
+      <span id="ind-step-2">2. Profile</span>
+      <span id="ind-step-3">3. Review</span>
+    </div>
+
+    <form id="wizard-form" onsubmit="event.preventDefault(); submitForm();">
+      <!-- Step 1 -->
+      <div id="step-1" class="step-pane">
+        <div class="form-group">
+          <label>Full Name:</label>
+          <input type="text" id="full-name" name="full_name" placeholder="John Doe" required />
+        </div>
+        <div class="form-group">
+          <label>Email Address:</label>
+          <input type="email" id="email" name="email" placeholder="john@example.com" required />
+        </div>
+        <button type="button" class="btn" id="btn-step1-next" onclick="goToStep(2)">Next Step</button>
+      </div>
+
+      <!-- Step 2 -->
+      <div id="step-2" class="step-pane" style="display:none;">
+        <div class="form-group">
+          <label>Department / Role:</label>
+          <select id="role-select" name="role">
+            <option value="engineering">Engineering</option>
+            <option value="product">Product Management</option>
+            <option value="design">Product Design</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label><input type="checkbox" id="newsletter" name="newsletter" checked /> Subscribe to product updates</label>
+        </div>
+        <button type="button" class="btn btn-secondary" onclick="goToStep(1)">Back</button>
+        <button type="button" class="btn" id="btn-step2-next" onclick="goToStep(3)">Next Step</button>
+      </div>
+
+      <!-- Step 3 -->
+      <div id="step-3" class="step-pane" style="display:none;">
+        <h3>Confirm Your Information</h3>
+        <p id="review-summary">Please review before final submission.</p>
+        <button type="button" class="btn btn-secondary" onclick="goToStep(2)">Back</button>
+        <button type="submit" class="btn" id="btn-submit-wizard">Submit Registration</button>
+      </div>
+
+      <!-- Step Success -->
+      <div id="step-success" style="display:none;">
+        <div class="alert-success">
+          🎉 Registration submitted successfully! Thank you.
+        </div>
+      </div>
+    </form>
+  </div>
+
+  <script>
+    async function dismissBanner() {
+      document.getElementById('cookie-overlay').style.display = 'none';
+      await fetch('/forms/api/banner', {method: 'POST'});
+    }
+
+    async function goToStep(n) {
+      document.querySelectorAll('.step-pane').forEach(el => el.style.display = 'none');
+      document.getElementById(`step-${n}`).style.display = 'block';
+      document.querySelectorAll('.step-indicator span').forEach((el, idx) => {
+        el.className = (idx + 1 === n) ? 'step-active' : '';
+      });
+      const name = document.getElementById('full-name') ? document.getElementById('full-name').value : '';
+      const email = document.getElementById('email') ? document.getElementById('email').value : '';
+      const role = document.getElementById('role-select') ? document.getElementById('role-select').value : '';
+      if (n === 3) {
+        document.getElementById('review-summary').textContent = `Name: ${name} | Email: ${email} | Role: ${role}`;
+      }
+      try {
+        await fetch('/forms/api/step', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({step: n, data: {full_name: name, email: email, role: role}})
+        });
+      } catch (e) {}
+    }
+
+    async function submitForm() {
+      const payload = {
+        full_name: document.getElementById('full-name').value,
+        email: document.getElementById('email').value,
+        role: document.getElementById('role-select').value,
+        newsletter: document.getElementById('newsletter').checked
+      };
+      await fetch('/forms/api/submit', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload)
+      });
+      document.querySelectorAll('.step-pane').forEach(el => el.style.display = 'none');
+      document.getElementById('step-success').style.display = 'block';
+    }
+  </script>
+</body>
+</html>

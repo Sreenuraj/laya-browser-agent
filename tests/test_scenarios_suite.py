@@ -12,6 +12,7 @@ import json
 import os
 import sys
 import time
+from typing import Optional
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from playwright.sync_api import sync_playwright
@@ -96,8 +97,10 @@ def test_scenario_1_user_places_order() -> str:
     return latest_id[:8]
 
 
-def test_scenario_2_user_cancels_order(order_prefix: str):
+def test_scenario_2_user_cancels_order(order_prefix: Optional[str] = None):
     """Scenario 2: User logs in, goes to my orders, cancels order by ID prefix, logs out."""
+    if not order_prefix:
+        order_prefix = test_scenario_1_user_places_order()
     print(f"\n[Scenario 2/5] User Order Cancellation Workflow (order: {order_prefix})...")
     agent = LayaAgent(
         target_url=BASE_URL,

@@ -1,0 +1,11 @@
+id: t2-forms-006
+tier: T2
+site: fixture/forms
+goal: Complete wizard registration for user David (david@work.org) and submit
+oracle:
+  type: state
+  check: state.submitted is True
+max_steps: 15
+tags:
+- wizard
+split: heldout

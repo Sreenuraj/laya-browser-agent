@@ -1,0 +1,11 @@
+id: t2-admin-008
+tier: T2
+site: fixture/admin
+goal: Reject pending candidate USR-001
+oracle:
+  type: state
+  check: items[0].status == 'REJECTED'
+max_steps: 15
+tags:
+- reject
+split: heldout

@@ -1,0 +1,13 @@
+id: t3-nexus-025
+tier: T3
+site: http://localhost:3000
+goal: login as admin (admin/Admin@123), navigate to /command-center and logout
+oracle:
+  type: url
+  contains: command-center
+max_steps: 15
+tags:
+- scenario5
+- admin
+- nav
+split: train

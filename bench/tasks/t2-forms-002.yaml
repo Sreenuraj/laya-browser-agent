@@ -1,0 +1,13 @@
+id: t2-forms-002
+tier: T2
+site: fixture/forms
+goal: Fill full name 'Alice Smith' and email 'alice@example.com', then click Next
+  Step
+oracle:
+  type: state
+  check: state.current_step == 2 and state.data.full_name == 'Alice Smith'
+max_steps: 15
+tags:
+- form
+- step
+split: heldout

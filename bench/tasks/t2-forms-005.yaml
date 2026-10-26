@@ -1,0 +1,11 @@
+id: t2-forms-005
+tier: T2
+site: fixture/forms
+goal: Accept cookies and start registration step 2
+oracle:
+  type: state
+  check: state.banner_dismissed is True and state.current_step >= 2
+max_steps: 15
+tags:
+- overlay
+split: train

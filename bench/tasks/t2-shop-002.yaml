@@ -1,0 +1,15 @@
+id: t2-shop-002
+tier: T2
+site: fixture/shop
+goal: Login as user (user/User@123), order 2 units of Mechanical Keyboard
+oracle:
+  type: state
+  check: len(orders) > 0 and orders[-1].product == 'Mechanical Keyboard' and orders[-1].quantity
+    == 2 and orders[-1].status == 'PENDING'
+max_steps: 20
+tags:
+- login
+- order
+- shop
+- qty
+split: heldout

@@ -1,0 +1,11 @@
+id: t2-admin-009
+tier: T2
+site: fixture/admin
+goal: Filter table by status 'rejected' and check list
+oracle:
+  type: state
+  check: state.selected_filter == 'rejected'
+max_steps: 15
+tags:
+- filter
+split: train

@@ -1,0 +1,11 @@
+id: t2-forms-007
+tier: T2
+site: fixture/forms
+goal: Dismiss cookie notice banner
+oracle:
+  type: state
+  check: state.banner_dismissed is True
+max_steps: 15
+tags:
+- banner
+split: train

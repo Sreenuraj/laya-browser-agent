@@ -1,0 +1,11 @@
+id: t2-shop-015
+tier: T2
+site: fixture/shop
+goal: Go to products, order 1 unit of Wireless Ergonomic Mouse as user (user/User@123)
+oracle:
+  type: state
+  check: len(orders) > 0 and orders[-1].product == 'Wireless Ergonomic Mouse'
+max_steps: 20
+tags:
+- order
+split: train

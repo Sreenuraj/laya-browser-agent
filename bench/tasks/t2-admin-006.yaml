@@ -1,0 +1,11 @@
+id: t2-admin-006
+tier: T2
+site: fixture/admin
+goal: Approve pending candidate with ID USR-003
+oracle:
+  type: state
+  check: items[2].status == 'APPROVED'
+max_steps: 15
+tags:
+- approve
+split: heldout

@@ -1,0 +1,12 @@
+id: t2-shop-006
+tier: T2
+site: fixture/shop
+goal: Check products catalog and verify Wireless Ergonomic Mouse is in stock
+oracle:
+  type: answer
+  substring: in_stock
+max_steps: 20
+tags:
+- read
+- shop
+split: heldout

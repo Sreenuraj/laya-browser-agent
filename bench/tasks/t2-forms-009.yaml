@@ -1,0 +1,11 @@
+id: t2-forms-009
+tier: T2
+site: fixture/forms
+goal: Fill in account info and advance to step 2
+oracle:
+  type: state
+  check: state.current_step >= 2
+max_steps: 15
+tags:
+- input
+split: train

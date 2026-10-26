@@ -1,0 +1,11 @@
+id: t2-admin-007
+tier: T2
+site: fixture/admin
+goal: Search candidates for 'Alice'
+oracle:
+  type: state
+  check: state.search_query.lower() == 'alice'
+max_steps: 15
+tags:
+- search
+split: train

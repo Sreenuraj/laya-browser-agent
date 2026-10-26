@@ -1,0 +1,23 @@
+id: t3-nexus-016
+tier: T3
+site: http://localhost:3000
+goal: login as user (user/User@123), search for E2E-ADM016 product, buy 1 unit and
+  logout
+oracle:
+  type: webmcp
+  tool: get_my_orders
+  login:
+    username: user
+    password: User@123
+  path: /my-orders
+  field: status
+  expected: PENDING
+  where:
+    quantity: 1
+  match: any
+max_steps: 15
+tags:
+- scenario1
+- user
+- order
+split: heldout

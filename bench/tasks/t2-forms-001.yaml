@@ -1,0 +1,12 @@
+id: t2-forms-001
+tier: T2
+site: fixture/forms
+goal: Dismiss cookie consent notice overlay
+oracle:
+  type: state
+  check: state.banner_dismissed is True
+max_steps: 15
+tags:
+- overlay
+- forms
+split: train

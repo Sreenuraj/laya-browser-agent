@@ -1,0 +1,11 @@
+id: t2-admin-005
+tier: T2
+site: fixture/admin
+goal: Navigate to next page of candidates via pagination
+oracle:
+  type: state
+  check: state.current_page == 2
+max_steps: 15
+tags:
+- pagination
+split: train

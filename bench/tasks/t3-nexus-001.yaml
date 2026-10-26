@@ -1,0 +1,23 @@
+id: t3-nexus-001
+tier: T3
+site: http://localhost:3000
+goal: login as user, go to products, order 2 qty of any available product, go to my
+  orders and confirm it is pending.
+oracle:
+  type: webmcp
+  tool: get_my_orders
+  login:
+    username: user
+    password: User@123
+  path: /my-orders
+  field: status
+  expected: PENDING
+  where:
+    quantity: 2
+  match: any
+max_steps: 15
+tags:
+- regression
+- report_goal
+- order
+split: train

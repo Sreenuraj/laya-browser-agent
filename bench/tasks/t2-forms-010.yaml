@@ -1,0 +1,12 @@
+id: t2-forms-010
+tier: T2
+site: fixture/forms
+goal: Dismiss overlay banner and submit application form
+oracle:
+  type: state
+  check: state.banner_dismissed is True and state.submitted is True
+max_steps: 15
+tags:
+- overlay
+- submit
+split: heldout
